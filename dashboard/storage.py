@@ -30,6 +30,9 @@ CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, started_at REAL NOT NULL, ended_at REAL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS one_open_run ON runs((1)) WHERE ended_at IS NULL;
+CREATE TABLE IF NOT EXISTS console_logs (
+    id INTEGER PRIMARY KEY, at REAL NOT NULL, message TEXT NOT NULL
+);
 """
 
 
@@ -46,6 +49,14 @@ class Store:
     def latest(self):
         row = self.db.execute("SELECT at, payload FROM samples ORDER BY id DESC LIMIT 1").fetchone()
         return (row["at"], json.loads(row["payload"])) if row else (None, None)
+
+    def record_log(self, at, message):
+        with self.db:
+            self.db.execute("INSERT INTO console_logs(at,message) VALUES(?,?)", (at, message))
+
+    def recent_logs(self, limit):
+        rows = self.db.execute("SELECT id,at,message FROM console_logs ORDER BY id DESC LIMIT ?", (limit,))
+        return [dict(row) for row in reversed(rows.fetchall())]
 
     def record_sample(self, at, sample, previous, gap):
         current_counts = sample.trays.model_dump()

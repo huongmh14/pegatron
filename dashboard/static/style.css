@@ -86,6 +86,7 @@ dd { margin: .15rem 0 0; font-variant-numeric: tabular-nums; font-weight: 680; }
 .meter { height: .45rem; margin-top: .7rem; border-radius: 999px; background: #dde7ee; overflow: hidden; }
 .meter-fill { width: 0%; height: 100%; border-radius: 999px; transition: width .22s ease; }
 .meter-m { background: var(--m); }
+.meter-s { background: var(--s); }
 .meter-l { background: var(--l); }
 .counts { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: .85rem; margin: 0; }
 .tray-card { padding: .85rem .95rem; border: 1px solid var(--line); border-top: 3px solid var(--line); border-radius: .6rem; background: var(--soft); }
@@ -120,6 +121,7 @@ button:disabled { background: #e8eef2; border-color: #d5e0e7; color: #4c6171; cu
 .command-feedback { margin-top: .65rem; min-height: 1.5rem; font-weight: 620; }
 #export { flex-shrink: 0; }
 .history-tools { display: grid; grid-template-columns: 1.6fr 1fr; align-items: end; gap: 1rem; }
+.console-log { max-height: 22rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; background: #172c44; color: #f4f8ff; border-radius: .5rem; }
 label { display: block; margin-bottom: .23rem; font-size: .85rem; font-weight: 630; }
 input, select { min-width: 0; width: 100%; border: 1px solid #aabcc9; color: var(--ink); padding: .42rem .55rem; background: var(--surface); }
 .field-row { display: flex; gap: .45rem; }

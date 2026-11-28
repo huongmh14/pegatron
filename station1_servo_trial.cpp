@@ -92,16 +92,16 @@ int main() {
     config.l_max_mm = 100.0;
     config.m_min_mm = 18.0;
     config.m_max_mm = 28.0;
-    config.n_samples = 3;
-    config.clear_samples = 1;
-    config.use_peak = true;  // decide on the item's highest point, not its rising edge
-    sorter_core::ItemDetector detector(config);
+    config.min_valid_samples = 10;
+    config.clear_samples = 2;
+    static sorter_core::ItemDetector detector(config);
     VL53L1X tof(i2c0);
     bool tof_ok = startTof(tof);
     bool enabled = true;  // boots ARMED (servo is at HOME); 'a' disarms for manual 'm' tests
     unsigned h0_count = 0;  // first 20 valid readings of the EMPTY belt set H0 automatically
     double h0_sum = 0.0;
     Station1TrialGate gate;
+    uint32_t measurement_ticket = 0;
     uint32_t last_sample = millis();
     uint32_t last_retry = millis();
     uint32_t last_report = millis();
@@ -117,6 +117,7 @@ int main() {
         switch (ch) {
         case 'a': case 'A':
             enabled = !enabled;
+            gate.reset(); detector.reset(); measurement_ticket = 0;
             printf("AUTO=%s mode=%s\n", enabled ? "ON" : "OFF", any_size ? "ANY_SIZE" : "L_ONLY");
             break;
         case 'm': case 'M':
@@ -125,6 +126,7 @@ int main() {
             break;
         case 'x': case 'X':
             any_size = !any_size;
+            gate.reset(); detector.reset(); measurement_ticket = 0;
             printf("MODE=%s\n", any_size ? "ANY_SIZE" : "L_ONLY");
             break;
         case 'q': home_us = clampUs(home_us - 10); force_status = true; break;
@@ -143,12 +145,14 @@ int main() {
         case 'U': gate.clear_ms += 20; force_status = true; break;
         case 'l': case 'L':
             position_active_low = !position_active_low;
+            gate.reset(); detector.reset(); measurement_ticket = 0;
             printf("LM393 active=%s\n", position_active_low ? "LOW(DO=0)" : "HIGH(DO=1)");
             break;
         case 'z': case 'Z':
             if (valid) {  // also un-sticks a detector stuck on a stale H0 (set_config resets it)
                 h0_mm = distance;
                 config.h0_mm = h0_mm;
+                gate.reset(); measurement_ticket = 0;
                 detector.set_config(config);
                 printf("H0 set to %.0f mm (belt must be EMPTY)\n", h0_mm);
             } else {
@@ -186,21 +190,20 @@ int main() {
             } else {
                 result = detector.feed(valid ? distance : -1.0, now);
             }
-            static unsigned mau_n = 0;  // log 1 of every 5 samples, always the deciding one
-            if ((detector.state() != sorter_core::ItemDetector::State::Idle && ++mau_n % 5 == 1) || result.ready) {
-                printf("MAU d=%u st=%u h~%.1f det=%u%s\n", distance, status, h0_mm - distance,
-                       static_cast<unsigned>(detector.state()), result.ready ? " <-CHOT" : "");
-            }
+            if (result.started)
+                measurement_ticket = enabled && !any_size ? gate.reserve(result.t0_ms) : 0;
             if (result.ready) {
                 const char *size = result.size == sorter_core::Size::L ? "L"
-                                 : result.size == sorter_core::Size::M ? "M" : "S";
+                                 : result.size == sorter_core::Size::M ? "M"
+                                 : result.size == sorter_core::Size::S ? "S" : "INVALID";
                 const bool push = result.action == sorter_core::Action::Push;
-                // ANY_SIZE ignores ToF (LM393 alone queues a push below), L_ONLY queues every decision.
-                const bool queued = enabled && !any_size && gate.enqueue(push, now);
-                printf("TOF_OBJECT d_med=%.1f h=%.1f size=%s -> %s | hang doi=%u%s\n",
-                       result.median_distance_mm, result.height_mm, size, push ? "PUSH" : "PASS",
-                       static_cast<unsigned>(gate.q_count),
-                       any_size ? " (ANY: chi log)" : !enabled ? " (AUTO=OFF: gui 'a')" : queued ? "" : " (HANG DOI DAY!)");
+                const bool queued = enabled && !any_size && gate.complete(measurement_ticket, push);
+                measurement_ticket = 0;
+                printf("TOF_OBJECT 20/60/20 N=%u giu=%u d_med=%.1f h=%.1f size=%s status=%u -> %s | queue=%u%s\n",
+                       static_cast<unsigned>(result.total_samples), static_cast<unsigned>(result.kept_samples),
+                       result.median_distance_mm, result.height_mm, size, static_cast<unsigned>(result.status),
+                       push ? "PUSH" : "PASS", static_cast<unsigned>(gate.q_count),
+                       any_size ? " (ANY: chi log)" : !enabled ? " (AUTO=OFF)" : queued ? "" : " (VE DA HUY)");
             }
         }
         if (tof_ok && now - last_sample > TOF_TIMEOUT_MS) {
@@ -220,20 +223,22 @@ int main() {
         // Manual push ('m') runs with enabled=false in the gate loop, so keep it alive while Extended.
         const bool gate_enabled = enabled || gate.stage == TrialStage::Extended;
         // ANY_SIZE = Arduino reference behaviour: every LM393 item is pushed, ToF is only logged.
-        if (enabled && any_size && position_active && gate.q_count == 0 && !gate.need_release &&
-            gate.stage == TrialStage::Idle)
+        if (enabled && any_size && position_active && gate.q_count == 0 && !gate.need_release)
             gate.enqueue(true, now);
         const TrialEvent event = gate.tick(now, gate_enabled, tof_ok || !enabled || any_size, position_active);
         switch (event) {
         case TrialEvent::Passed: printf("LM393: phoi M/S -> cho qua | hang doi=%u\n", static_cast<unsigned>(gate.q_count)); break;
-        case TrialEvent::Unmatched: printf("UNMATCHED: LM393 thay phoi nhung ToF chua do -> khong day\n"); break;
+        case TrialEvent::Unmatched: printf("UNMATCHED: mat dong bo -> khoa day; don bang tai, tat/bat AUTO\n"); break;
         case TrialEvent::Push:
             printf("CO VAT -> SERVO_PUSH %u us (giu %lu ms)\n", push_us, static_cast<unsigned long>(gate.push_ms));
             break;
         case TrialEvent::Returned: printf("THU VE -> SERVO_HOME %u us, cho vat roi cam bien\n", home_us); break;
         case TrialEvent::Ready: printf("SAN SANG cho vat tiep theo\n"); break;
-        case TrialEvent::TimedOut: printf("POSITION_TIMEOUT: phoi L trong hang doi khong toi LM393 -> bo\n"); break;
-        case TrialEvent::SensorLost: printf("SENSOR_LOST: servo home, xoa hang doi\n"); break;
+        case TrialEvent::TimedOut: printf("POSITION_TIMEOUT: mat dong bo -> khoa day; don bang tai, tat/bat AUTO\n"); break;
+        case TrialEvent::NotReady: printf("NOT_READY: bo ve dang do, khong day muon\n"); break;
+        case TrialEvent::Busy: printf("BUSY: bo ve phoi nay, khong day muon\n"); break;
+        case TrialEvent::SyncLost: printf("SYNC_LOST: khoa day; don bang tai, tat/bat AUTO\n"); break;
+        case TrialEvent::SensorLost: printf("SENSOR_LOST: servo home, khoa day; don bang tai, tat/bat AUTO\n"); break;
         default: break;
         }
         const uint16_t wanted_pulse = gate.stage == TrialStage::Extended ? push_us : home_us;
@@ -243,7 +248,7 @@ int main() {
         }
         if (force_status || now - last_report >= 1000) {
             printf("STATUS auto=%u mode=%s tof=%s d=%u st=%u H0=%.0f LM393_DO=%u pos=%u(active_%s) stage=%u "
-                   "servo=%u us | HOME=%u PUSH=%u push_ms=%lu stable=%lu wait=%lu thu=%lu roi=%lu\n",
+                   "servo=%u us | HOME=%u PUSH=%u push_ms=%lu stable=%lu wait=%lu thu=%lu roi=%lu q=%u\n",
                    enabled, any_size ? "ANY" : "L", tof_ok ? "OK" : "FAIL", distance, status, h0_mm, raw,
                    position_active, position_active_low ? "LOW" : "HIGH",
                    static_cast<unsigned>(gate.stage), current_pulse, home_us, push_us,

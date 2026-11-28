@@ -44,6 +44,21 @@ class DashboardTests(unittest.TestCase):
         self.dashboard.handle_message("availability", json.dumps(
             {"schema_version": 1, "link_id": link_id, "status": status}), retained=True)
 
+    def test_console_log_is_persisted_and_invalid_messages_are_ignored(self):
+        self.dashboard.handle_message("console", json.dumps({"line": "[CONTROL] START"}))
+        self.dashboard.handle_message("console", b"not json")
+        self.dashboard.handle_message("console", json.dumps({"line": "retained"}), retained=True)
+        rows = self.dashboard.store.recent_logs(10)
+        self.assertEqual([row["message"] for row in rows], ["[CONTROL] START"])
+        with patch.object(app.state, "dashboard", self.dashboard, create=True):
+            self.assertEqual(TestClient(app, base_url="http://localhost").get("/api/logs?limit=1").json()[0]["message"], "[CONTROL] START")
+        from storage import Store
+        reopened = Store(self.dashboard.store.path)
+        try:
+            self.assertEqual(reopened.recent_logs(1)[0]["message"], "[CONTROL] START")
+        finally:
+            reopened.db.close()
+
     def sample(self, now=10):
         self.dashboard.handle_message("telemetry", json.dumps(self.sim.telemetry(now)))
 

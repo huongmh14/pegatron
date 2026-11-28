@@ -1,8 +1,8 @@
 # BangTaiPhanLoai
 
 Bản firmware C++ (`main.cpp`) dùng Pico 2 W, hai ToF VL53L1X, hai servo đẩy
-và hai LM393 xác nhận phôi đến vị trí đẩy. Trạm 1 đẩy L, trạm 2 đẩy M;
-S đi thẳng. Bản MicroPython (`main_micropython.py`) dùng VL53L0X và sơ đồ
+và hai LM393 xác nhận phôi đến vị trí đẩy. Trạm 1 đẩy L, trạm 2 đẩy S;
+M đi thẳng. Bản MicroPython (`main_micropython.py`) dùng VL53L0X và sơ đồ
 chân riêng; không dùng sơ đồ dưới đây cho bản đó.
 
 ## Sơ đồ chân firmware C++
@@ -25,8 +25,10 @@ Hai servo dùng nguồn 5 V ngoài đủ dòng, **không** lấy điện từ GP
 thể lên 5 V, phải hạ mức DO xuống 3,3 V trước GP12/GP13; không đưa 5 V vào
 GPIO Pico. Chân LPN/XSHUT của ToF giữ HIGH ở 3,3 V như cấu hình hiện tại.
 
-ToF chốt kích thước; mỗi LM393 ghép phôi theo thứ tự đã đo và kích servo nếu
-trạm đó cần đẩy. Mặc định servo HOME=1500 µs, PUSH=2500 µs, giữ PUSH 220 ms,
+ToF thu trọn lượt phôi, bỏ 20% mẫu đầu/cuối theo thứ tự thời gian rồi lấy
+trung vị phần giữa. FIFO giữ chỗ từ lúc bắt đầu đo; mỗi lượt LM393 tiêu thụ
+một vé, chỉ đẩy khi vé đã chốt đúng cỡ. Xem [thuật toán và giới hạn vận hành](docs/thuat-toan-phan-loai.md).
+Mặc định servo HOME=1500 µs, PUSH=2500 µs, giữ PUSH 220 ms,
 hồi 150 ms. Hiệu chỉnh riêng `SERVO1_HOME_US`/`SERVO1_PUSH_US` và
 `SERVO2_HOME_US`/`SERVO2_PUSH_US` trong `main.cpp` khi chưa gắn tay đẩy;
 đảm bảo cơ cấu không chạm điểm chặn. Nếu LM393 tác động mức HIGH, đổi

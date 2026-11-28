@@ -10,9 +10,9 @@
  *
  *  Logic:
  *    - 2 tram chay DOC LAP va DONG THOI, khong chan CPU (Non-blocking).
- *    - Tram 1 day L; tram 2 day M. ToF chot kich thuoc, LM393 xac nhan vi tri,
+ *    - Tram 1 day L; tram 2 day S. ToF chot kich thuoc, LM393 xac nhan vi tri,
  *      servo day trong on_time_ms roi ve HOME. Mat ToF/tam dung -> HOME.
- *    - Size S va vung dem giua hai khoang di thang qua ca hai tram (khong day).
+ *    - Size M di thang; phep do loi/ngoai khoang khong duoc day.
  *    - Nguong va thoi gian gat co the chinh truc tiep tu Web Dashboard.
  *    - Co bo dem san pham phan loai, loc nhieu (debounce), chong day lap.
  * =====================================================================
@@ -62,21 +62,52 @@
 #define SOL2_PIN        11     // Servo tram 2; chung PWM slice voi GP10
 #define LM393_1_PIN     12
 #define LM393_2_PIN     13
+#define START_PIN       19
+#define STOP_PIN        20
+#define ESTOP_PIN       21
+// 1: GP21 noi tiep diem NO cua E-STOP (binh thuong=1, nhan E-STOP=0V);
+// 0: GP21 noi tiep diem NC cua E-STOP (binh thuong=0V, nhan/ho=1).
+// Luu y: E-STOP van co tiep diem NC doc lap cat truc tiep cuon MY4.
+#ifndef ESTOP_ACTIVE_LOW
+#define ESTOP_ACTIVE_LOW 1
+#endif
+#define RELAY_PIN       26
+// -1: chua xac minh; 0: relay hut khi IN=0; 1: relay hut khi IN=1.
+// Relay dang dung tiep diem NC: hut = dung, nha = chay.
+#ifndef RELAY_ACTIVE_LEVEL
+#define RELAY_ACTIVE_LEVEL 0
+#endif
+static_assert(RELAY_ACTIVE_LEVEL >= -1 && RELAY_ACTIVE_LEVEL <= 1, "RELAY_ACTIVE_LEVEL phai la -1, 0 hoac 1");
 
-#define I2C_BAUDRATE    (100 * 1000)   // 100 kHz, da thu voi hai cam bien
+#ifndef ENABLE_WIFI
+#define ENABLE_WIFI 0          // 0: tam bo Wi-Fi/MQTT, chay doc lap
+#endif
+#ifndef AUTO_START_ON_BOOT
+#define AUTO_START_ON_BOOT 0   // 0: cho nhan nut START (GP19) moi chay va mo relay GP26
+#endif
 
-// ===== Servo + LM393 hai tram (gia tri khoi dau, PHAI hieu chinh tren ban) =====
+#define I2C_BAUDRATE    (50 * 1000)    // 50 kHz: chong nhieu EMI dong co bang tai tot hon 100 kHz
+
+// ===== Servo + LM393 hai tram =====
 #define LM393_ACTIVE_LOW    1      // 1: co vat -> DO=0. Do bang dong ho roi doi 0/1 neu nguoc.
-#define SERVO1_HOME_US      1500
-#define SERVO1_PUSH_US      2500
-#define SERVO2_HOME_US      1500   // Hieu chinh rieng: co khi tram 2 co the dao chieu
-#define SERVO2_PUSH_US      2500
-#define SERVO_MIN_US        1000   // Chan an toan: khong bao gio xuat xung ngoai khoang nay
+// Co cau banh rang - thanh rang: Z=20, D=6cm, hanh trinh day 6cm (~115 deg), SG90 5-6V
+// Co cau banh rang - thanh rang: Z=20, D=6cm, hanh trinh day ~7cm (~134 deg), SG90 5-6V
+#define SERVO1_HOME_US      600    // Tram 1 XUNG_BAT_DAU: vi tri goc thu gon (~9 deg)
+#define SERVO1_PUSH_US      1880   // Tram 1 XUNG_DAY_RA: day ra du 6cm (+115 deg)
+#define SERVO1_PUSH_US      2100   // Tram 1 XUNG_DAY_RA: 1880 + 220us (~+1cm -> tong ~7cm)
+#define SERVO2_HOME_US      600    // Tram 2 XUNG_BAT_DAU (tinh chinh rieng neu co khi lech)
+#define SERVO2_PUSH_US      1880   // Tram 2 XUNG_DAY_RA
+#define SERVO2_PUSH_US      2100   // Tram 2 XUNG_DAY_RA: ~7cm
+#define SERVO_INIT_MS       250    // TRE_KHOI_DONG: on dinh vi tri goc khi boot
+#define SERVO_PUSH_MS       240    // TRE_DAY_RA: pha day 6cm
+#define SERVO_RECOVER_MS    260    // TRE_THU_VE: pha rut ve goc roi ngat xung giu (detach)
+#define SERVO_PUSH_MS       300    // TRE_DAY_RA: du thoi gian day het 7cm va dut khoat
+#define SERVO_RECOVER_MS    300    // TRE_THU_VE: thu het 7cm ve goc roi ngat xung giu (detach)
+#define SERVO_MIN_US        500    // Dai xung rong SG90 (500us - 2500us)
 #define SERVO_MAX_US        2500   // SG90 toi da ~2500us; kiem tra co khi truoc khi tang PUSH
-#define SERVO_RECOVER_MS    150    // Cho servo thu ve het hanh trinh
 #define LM393_CLEAR_MS      30     // Phoi da xu ly phai roi LM393 >= ms nay truoc khi nhan phoi tiep
 #define LM393_STABLE_MS     10     // LM393 phai on dinh ACTIVE >= ms nay (chong nhieu)
-#define LM393_WAIT_LIMIT_MS 1500   // Ket qua ToF trong hang doi qua ms nay chua toi LM393 -> bo
+#define LM393_WAIT_LIMIT_MS 4000   // Qua 4s tu luc ToF chot -> tu bo ve cu (khong khoa tram)
 static_assert(SERVO1_HOME_US >= SERVO_MIN_US && SERVO1_HOME_US <= SERVO_MAX_US, "HOME1 ngoai khoang an toan");
 static_assert(SERVO1_PUSH_US >= SERVO_MIN_US && SERVO1_PUSH_US <= SERVO_MAX_US, "PUSH1 ngoai khoang an toan");
 static_assert(SERVO2_HOME_US >= SERVO_MIN_US && SERVO2_HOME_US <= SERVO_MAX_US, "HOME2 ngoai khoang an toan");
@@ -86,9 +117,9 @@ static_assert(SERVO2_PUSH_US >= SERVO_MIN_US && SERVO2_PUSH_US <= SERVO_MAX_US, 
 #define BELT_CLEAR_MIN_MM   80     // Mat bang tai 85-90mm; >= 80mm moi cho nhan phoi tiep
 #define DEBOUNCE_COUNT      2      // So mau lien tiep trong khoang size de xac nhan phoi
 #define CLEAR_COUNT         1      // So mau lien tiep thay mat bang tai de chong kich lap
-#define SENSOR_RETRY_MS     2500   // Thu khoi tao lai cam bien neu mat ket noi
+#define SENSOR_RETRY_MS     300    // Thu khoi tao lai cam bien nhanh neu nhieu I2C khi dong co chay
 #define SENSOR_TIMEOUT_MS   800    // Timeout tin hieu cam bien
-#define PRINT_PERIOD_MS     250    // Chu ky in log ra Serial Monitor
+#define PRINT_PERIOD_MS     500    // Chu ky in trang thai (500ms de khong troi log su kien)
 #define QUEUE_SIZE          8      // So luong vat toi da trong hang doi tre di chuyen
 #define MAX_VALID_RANGE_MM  4000   // Khoang cach do toi da hop le cua VL53L1X (4m)
 
@@ -96,16 +127,17 @@ static_assert(SERVO2_PUSH_US >= SERVO_MIN_US && SERVO2_PUSH_US <= SERVO_MAX_US, 
 #error "Tram 1 dung SG90 + LM393, can USE_SORTER_ENGINE=1 (tranh 2 co che cung dieu khien GP10)"
 #endif
 #if USE_SORTER_ENGINE
-#define DEFAULT_H0_MM       82.0   // H0 ToF tram 1/2 khi chua co PEGATRON_REFERENCE_x_MM; DO lai tren ban
-#define DETECT_DELTA_MM     6.0    // Nguong phat hien vat thap hon mat bang (mm)
+#define DEFAULT_H0_MM       89.0   // Mat bang tai thuc te ~88-92mm (dung neu luc boot bi vat che ToF)
+#define DETECT_DELTA_MM     8.0    // Nguong phat hien vat thap hon mat bang (mm), cao hon nhieu bang trong
 #define CLEAR_DELTA_MM      5.0    // Tre hysteresis mo khoa WaitClear (mm)
 #define THRESHOLD_SM_MM     7.0    // Nguong T_SM (<=7mm: S, >7mm: M)
 #define THRESHOLD_ML_MM     20.0   // Nguong T_ML (>20mm: L)
 #define L_HEIGHT_MIN_MM     28.0   // L that 40mm, ToF do ~33 (thap ~7mm). h>=28 la L (Tram 1)
 #define L_HEIGHT_MAX_MM     100.0  // Chieu cao toi da size L (Tram 1)
-#define M_HEIGHT_MIN_MM     18.0   // M that 30mm, ToF do ~22. 18<=h<28 la M (Tram 2); S do ~13-17
+#define M_HEIGHT_MIN_MM     18.0   // M that 30mm, ToF do ~22. 18<=h<28 la M di thang; S do ~13-17 (Tram 2 day S)
 #define M_HEIGHT_MAX_MM     28.0   // L duoc xet truoc nen h>=28 la L
-#define MEDIAN_SAMPLES      3      // So mau trung vi sau khi bo mau mep
+#define MIN_VALID_SAMPLES   5      // Toi thieu 5 mau hop le (~75ms @ 68Hz, dung yeu cau config_valid)
+#define S_HEIGHT_MIN_MM     5.0    // S: [5, M_HEIGHT_MIN_MM), can hieu chuan tren may
 #define SOLENOID_MAX_ON_MS  600    // Chan tren thoi gian hut solenoid (ms)
 #define SOLENOID_MIN_OFF_MS 120    // Thoi gian hoi toi thieu giua hai nhip gat (ms)
 #define SOLENOID_RATED_DUTY 0.25   // Gioi han nhiet trong cua so 60s
@@ -158,6 +190,7 @@ struct Station {
     sorter_core::TriggerGeometry  geometry{};
     sorter_core::ItemDetector     detector{sorter_core::StationConfig{}};
     sorter_core::SolenoidActuator actuator{};
+    uint32_t                      measurement_ticket = 0;
     uint32_t                      missed_count = 0;
     bool                          manual_test_active = false;
     bool                          servo = false;
@@ -174,22 +207,19 @@ struct Station {
 };
 
 // Web dashboard can pause sorting (belt keeps being measured, solenoids stay off).
-static bool sorting_enabled = true;
+static bool sorting_enabled = false;
 #if USE_SORTER_ENGINE
 static sorter_core::SystemFsm system_fsm;
-static uint32_t tray_s_count = 0;
+static uint32_t tray_m_count = 0;
 #endif
 
 static VL53L1X tof1(TOF1_I2C);
 static VL53L1X tof2(TOF2_I2C);
 
-// Cau hinh 2 tram (D-13: thu tu L -> M -> S khong day):
-// Tram 1: size L (<62mm mặc định), kích đẩy L.
-// Tram 2: size M (62-75mm mặc định), kích đẩy M.
-// Size S nam ngoai hai khoang nay nen di thang qua ca hai tram.
+// Tram 1 day L; tram 2 day S; M di thang.
 static Station stations[2] = {
-    { "TRAM1", TOF1_I2C, TOF1_SDA_PIN, TOF1_SCL_PIN, SOL1_PIN, MODE_PULSE, 0, 62, 0, 220, &tof1 },
-    { "TRAM2", TOF2_I2C, TOF2_SDA_PIN, TOF2_SCL_PIN, SOL2_PIN, MODE_PULSE, 62, 75, 0, 220, &tof2 },
+    { "TRAM1", TOF1_I2C, TOF1_SDA_PIN, TOF1_SCL_PIN, SOL1_PIN, MODE_PULSE, 0, 62, 0, SERVO_PUSH_MS, &tof1 },
+    { "TRAM2", TOF2_I2C, TOF2_SDA_PIN, TOF2_SCL_PIN, SOL2_PIN, MODE_PULSE, 62, 75, 0, SERVO_PUSH_MS, &tof2 },
 };
 
 // ======================= TIEN ICH =======================
@@ -238,12 +268,35 @@ static void solenoidSet(Station &s, bool on) {
 }
 
 // ---------------------- Servo + LM393 (moi tram mot gate rieng) ----------------------
+static inline bool servoUsesDetach(const Station &) {
+    return true;  // Ca 2 tram: ngat xung giu sau khi thu ve goc (chong rung & nong SG90)
+}
+
 static void servoWrite(Station &s, uint16_t us) {
     if (us < SERVO_MIN_US) us = SERVO_MIN_US;
     if (us > SERVO_MAX_US) us = SERVO_MAX_US;
     if (us == s.servo_us) return;
     pwm_set_gpio_level(s.sol_pin, us);   // 1 MHz counter: level = pulse width in us
     s.servo_us = us;
+}
+
+static void servoDetach(Station &s) {
+    if (s.servo_us == 0) return;
+    pwm_set_gpio_level(s.sol_pin, 0);    // 0% duty = ngat xung giu (giong myServo.detach())
+    s.servo_us = 0;
+}
+
+static void servoApplyStage(Station &s) {
+    const auto st = s.servo_gate.stage;
+    if (st == TrialStage::Extended) {
+        servoWrite(s, s.servo_push_us);
+    } else if (st == TrialStage::Recovery) {
+        servoWrite(s, s.servo_home_us);
+    } else if (servoUsesDetach(s)) {
+        servoDetach(s);
+    } else {
+        servoWrite(s, s.servo_home_us);
+    }
 }
 
 static void servoInit(Station &s) {
@@ -253,13 +306,18 @@ static void servoInit(Station &s) {
     if (!pwm_ready) {
         pwm_config config = pwm_get_default_config();
         pwm_config_set_clkdiv(&config, static_cast<float>(clock_get_hz(clk_sys)) / 1000000.0f);
-        pwm_config_set_wrap(&config, 19999);  // 20 ms period
+        pwm_config_set_wrap(&config, 19999);  // 20 ms period (50 Hz)
         pwm_init(slice, &config, false);
         pwm_ready = true;
     }
     pwm_set_gpio_level(s.sol_pin, s.servo_home_us);
     pwm_set_enabled(slice, true);
     s.servo_us = s.servo_home_us;
+    if (servoUsesDetach(s)) {
+        // Buoc 1 khoi dong: dua thanh day ve sat goc (600us), doi 250ms roi ngat xung giu
+        sleep_ms(SERVO_INIT_MS);
+        servoDetach(s);
+    }
     s.servo_gate = Station1TrialGate{};
     s.servo_gate.position_stable_ms = LM393_STABLE_MS;
     s.servo_gate.wait_limit_ms = LM393_WAIT_LIMIT_MS;
@@ -277,28 +335,133 @@ static bool lm393Active(const Station &s) { return lm393Raw(s) == (LM393_ACTIVE_
 
 // Back to HOME and forget any pending item (pause, fault, E-stop, calib, sensor loss).
 static void servoAbort(Station &s) {
+    const bool was_active = (s.servo_us != 0);
     s.servo_gate.reset();
-    servoWrite(s, s.servo_home_us);
+    s.measurement_ticket = 0;
+    if (servoUsesDetach(s)) {
+        if (was_active) {
+            servoWrite(s, s.servo_home_us);
+            sleep_ms(SERVO_RECOVER_MS);
+            servoDetach(s);
+        }
+    } else {
+        servoWrite(s, s.servo_home_us);
+    }
+}
+
+static const char *sizeName(sorter_core::Size sz);
+
+static void servoQueuePush(Station &s, bool push, uint32_t now) {
+    auto &g = s.servo_gate;
+    if (g.q_count == Station1TrialGate::QUEUE_MAX) {
+        g.q_head = (g.q_head + 1) % Station1TrialGate::QUEUE_MAX;
+        --g.q_count;
+        printf("[%s] Hang doi day -> bo ve cu nhat\n", s.name);
+    }
+    const std::size_t idx = (g.q_head + g.q_count) % Station1TrialGate::QUEUE_MAX;
+    g.q_push[idx] = push;
+    g.q_ready[idx] = true;
+    g.q_time[idx] = now;
+    ++g.q_count;
 }
 
 static void servoStep(Station &s, uint32_t now, bool enabled) {
     const bool raw = lm393Raw(s);
+    const bool active = lm393Active(s);
     if (raw != s.position_last_raw) {
         s.position_last_raw = raw;
         printf("[%s LM393] DO=%u -> %s (t=%lu ms)\n", s.name, (unsigned)raw,
-               lm393Active(s) ? "CO VAT" : "KHONG VAT", (unsigned long)now);
+               active ? "CO VAT" : "KHONG VAT", (unsigned long)now);
     }
-    switch (s.servo_gate.tick(now, enabled, s.sensor_ok, lm393Active(s))) {
-    case TrialEvent::Passed:       printf("[%s] LM393 thay phoi khong can day -> cho qua (hang doi con %u)\n", s.name, (unsigned)s.servo_gate.q_count); break;
-    case TrialEvent::Unmatched:    ++s.missed_count; printf("[%s] CANH BAO: LM393 thay phoi nhung ToF chua do -> KHONG DAY\n", s.name); break;
-    case TrialEvent::Push:        ++s.push_count; printf("[%s] SERVO DAY (%u us) | Tong day: %lu\n", s.name, (unsigned)s.servo_push_us, (unsigned long)s.push_count); break;
-    case TrialEvent::Returned:     printf("[%s] SERVO THU VE, cho vat roi LM393\n", s.name); break;
-    case TrialEvent::Ready:        printf("[%s] SAN SANG cho phoi tiep theo\n", s.name); break;
-    case TrialEvent::TimedOut:     ++s.missed_count; printf("[%s] CANH BAO: LM393 khong xac nhan trong %u ms -> BO PHOI\n", s.name, (unsigned)LM393_WAIT_LIMIT_MS); break;
-    case TrialEvent::SensorLost:   printf("[%s] MAT ToF -> servo ve nghi, khong day\n", s.name); break;
-    default: break;
+
+    auto &g = s.servo_gate;
+    if (!enabled) {
+        g.reset();
+        g.need_release = active;  // Neu LM393 dang dinh san luc bat, cho nha ve trong
+        servoApplyStage(s);
+        return;
     }
-    servoWrite(s, s.servo_gate.stage == TrialStage::Extended ? s.servo_push_us : s.servo_home_us);
+
+    // 1. Chu ky servo: Extended (PUSH) -> Recovery (HOME) -> Idle (DETACH cho ca 2 tram)
+    if (g.stage == TrialStage::Extended && now - g.stage_since >= g.push_ms) {
+        g.stage = TrialStage::Recovery;
+        g.stage_since = now;
+        printf(">>> [%s] SERVO GP%u THU VE GOC: PWM=%u us trong %lu ms\n",
+               s.name, (unsigned)s.sol_pin, (unsigned)s.servo_home_us, (unsigned long)g.recover_ms);
+    } else if (g.stage == TrialStage::Recovery && now - g.stage_since >= g.recover_ms) {
+        g.stage = TrialStage::Idle;
+        printf(">>> [%s] SERVO GP%u DAY THANH CONG -> NGAT XUNG GIU (PWM=0 us, DETACH) | Tong da day: %lu\n",
+               s.name, (unsigned)s.sol_pin, (unsigned long)s.push_count);
+    }
+
+    // 2. Tu bo ve qua han (khong khoa tram)
+    while (g.q_count > 0 && now - g.q_time[g.q_head] >= g.wait_limit_ms) {
+        g.q_head = (g.q_head + 1) % Station1TrialGate::QUEUE_MAX;
+        --g.q_count;
+        printf("[%s] Bo ve qua han >%lums (con %u ve)\n",
+               s.name, (unsigned long)g.wait_limit_ms, (unsigned)g.q_count);
+    }
+
+    // 3. Cho LM393 nha ve trong truoc khi nhan phoi tiep theo
+    if (g.need_release) {
+        if (active) {
+            g.release_timing = false;
+        } else {
+            if (!g.release_timing) { g.release_timing = true; g.release_since = now; }
+            if (now - g.release_since >= g.clear_ms) g.need_release = false;
+        }
+        servoApplyStage(s);
+        return;
+    }
+
+    // 4. Canh len LM393 (TRONG -> CO VAT, on dinh >= position_stable_ms)
+    if (!active) {
+        g.position_timing = false;
+    } else {
+        if (!g.position_timing) { g.position_timing = true; g.position_since = now; }
+        if (now - g.position_since >= g.position_stable_ms) {
+            g.position_timing = false;
+            g.need_release = true;
+            g.release_timing = false;
+            if (g.q_count == 0) {
+                const auto early = s.detector.finish_early();
+                if (early.ready &&
+                    (early.action == sorter_core::Action::Push || early.action == sorter_core::Action::Pass)) {
+                    const bool push = early.action == sorter_core::Action::Push;
+                    printf(">>> [%s] CHOT SOM TAI LM393: mau=%u (giu %u) | d_med=%.1f mm | h=%.1f mm => SIZE %s -> %s\n",
+                           s.name, (unsigned)early.total_samples, (unsigned)early.kept_samples,
+                           early.median_distance_mm, early.height_mm, sizeName(early.size),
+                           push ? "DAY (PUSH)" : "CHO QUA (PASS)");
+                    if (push) ++s.total_count;
+                    if (s.detector_cfg.station == 2 && early.size == sorter_core::Size::M) ++tray_m_count;
+                    servoQueuePush(s, push, now);
+                }
+            }
+            if (g.q_count == 0) {
+                printf(">>> [%s] LM393 THAY VAT -> KHONG DAY (hang doi rong, ToF chua chot kip)\n", s.name);
+            } else {
+                const bool push = g.q_push[g.q_head];
+                g.q_head = (g.q_head + 1) % Station1TrialGate::QUEUE_MAX;
+                --g.q_count;
+                if (!push) {
+                    printf(">>> [%s] LM393 THAY VAT -> KHONG DAY (CHO QUA) | hang doi con %u ve\n",
+                           s.name, (unsigned)g.q_count);
+                } else if (g.stage != TrialStage::Idle) {
+                    printf(">>> [%s] LM393 THAY VAT -> KHONG DAY (SERVO GP%u DANG BAN)\n",
+                           s.name, (unsigned)s.sol_pin);
+                } else {
+                    g.stage = TrialStage::Extended;
+                    g.stage_since = now;
+                    ++s.push_count;
+                    printf(">>> [%s] LM393 THAY VAT -> KICH SERVO GP%u DAY RA: PWM=%u us trong %lu ms (lan #%lu)\n",
+                           s.name, (unsigned)s.sol_pin, (unsigned)s.servo_push_us,
+                           (unsigned long)g.push_ms, (unsigned long)s.push_count);
+                }
+            }
+        }
+    }
+
+    servoApplyStage(s);
 }
 
 // Stop whatever the station is doing (solenoid release or servo home).
@@ -307,6 +470,82 @@ static void stationRelease(Station &s, uint32_t now) {
     const auto off_tick = s.actuator.tick(now, false);
     if (off_tick.changed) solenoidSet(s, false);
 }
+
+#if USE_SORTER_ENGINE
+static const char *fsmStateName(sorter_core::SystemState st);
+
+static inline bool estopTriggered() {
+    return ESTOP_ACTIVE_LOW ? !gpio_get(ESTOP_PIN) : gpio_get(ESTOP_PIN);
+}
+
+static void relayUpdate() {
+    if (RELAY_ACTIVE_LEVEL < 0) return;
+    static int last_level = -1;
+    const bool run = system_fsm.state() == sorter_core::SystemState::Running &&
+                     !gpio_get(STOP_PIN) && !estopTriggered();
+    const int level = run ? !RELAY_ACTIVE_LEVEL : RELAY_ACTIVE_LEVEL;
+    gpio_set_dir(RELAY_PIN, GPIO_OUT);
+    gpio_put(RELAY_PIN, level);
+    if (level != last_level) {
+        last_level = level;
+        printf("[RELAY] GP%u=%d (%s)\n", (unsigned)RELAY_PIN, level,
+               run ? "RUN: 3.3V nha relay -> NC dong" : "STOP: 0V hut relay -> NC ho");
+    }
+}
+
+static const char *controlBlockReason() {
+    if (estopTriggered() || system_fsm.state() == sorter_core::SystemState::Estop) return "ESTOP_ACTIVE";
+    if (gpio_get(STOP_PIN)) return "STOP_ACTIVE";
+    if (RELAY_ACTIVE_LEVEL < 0) return "RELAY_UNCONFIGURED";
+    return nullptr;
+}
+
+static void pollControls(uint32_t now) {
+    static bool raw_start = true, stable_start = true, armed = false;
+    static bool last_estop = false, last_stop = false;
+    static uint32_t changed_at = 0;
+    const bool estop = estopTriggered();
+    const bool stop = gpio_get(STOP_PIN);
+    if (estop != last_estop || stop != last_stop) {
+        printf("[CONTROL] STOP=%s E-STOP=%s\n", stop ? "OPEN" : "OK", estop ? "ACTIVE" : "OK");
+        last_estop = estop;
+        last_stop = stop;
+    }
+    system_fsm.update_inputs(stop, estop);
+    if (estop || stop) {
+        sorting_enabled = false;
+        relayUpdate();
+        for (Station &s : stations) {
+            s.manual_test_active = false;
+            stationRelease(s, now);
+            s.detector.reset();
+            s.state = ST_IDLE;
+        }
+    }
+    const bool current = gpio_get(START_PIN);
+    if (current != raw_start) { raw_start = current; changed_at = now; }
+    if (raw_start != stable_start && now - changed_at >= 30) {
+        stable_start = raw_start;
+        printf("[CONTROL] GP%u(START)=%u (%s)\n", (unsigned)START_PIN,
+               (unsigned)stable_start, stable_start ? "NHA" : "NHAN");
+        if (stable_start) armed = true;
+        else if (armed) {
+            armed = false;
+            if (!estop && !stop && RELAY_ACTIVE_LEVEL >= 0) {
+                if (system_fsm.state() == sorter_core::SystemState::Estop) system_fsm.request_reset(true);
+                else system_fsm.request_start();
+                sorting_enabled = system_fsm.state() == sorter_core::SystemState::Running;
+                printf("[CONTROL] START: %s\n", sorting_enabled ? "RUN" : "RESET / IDLE");
+            } else {
+                printf("[CONTROL] START blocked: %s\n", controlBlockReason());
+            }
+        }
+    } else if (stable_start && current && now >= 30) {
+        armed = true;
+    }
+    relayUpdate();
+}
+#endif
 
 static bool stationActive(const Station &s) {
     return s.servo ? s.servo_gate.stage == TrialStage::Extended : s.actuator.is_on();
@@ -394,8 +633,8 @@ static bool tofInit(Station &s) {
         return false;
     }
     s.tof->setDistanceMode(VL53L1X::Medium);       // Che do tam trung (chinh xac cho bang tai)
-    s.tof->setMeasurementTimingBudget(15000);     // 15ms/lan do (~66Hz) bat kip 2 vat gan nhau
-    s.tof->startContinuous(15);                   // Do lien tuc chu ky 15ms
+    s.tof->setMeasurementTimingBudget(15000);     // Requested budget; verify actual dataReady cadence.
+    s.tof->startContinuous(15);                   // Current driver ignores period_ms: back-to-back mode.
     s.sensor_ok        = true;
     s.has_valid_target = false;
     s.hit_count        = 0;
@@ -454,64 +693,55 @@ static void stationUpdate(Station &s) {
 
     // 1. Kiem tra ket noi cam bien
     if (!s.sensor_ok) {
-        if (s.servo) servoStep(s, now, true);  // logs SensorLost, servo -> HOME
-        stationRelease(s, now);
+        if (s.servo) servoStep(s, now, system_fsm.state() == sorter_core::SystemState::Running);
+        else stationRelease(s, now);
         s.manual_test_active = false;
+        s.measurement_ticket = 0;
         s.detector.reset();
         s.state = ST_IDLE;
         if (now - s.last_retry_ms > SENSOR_RETRY_MS) tofInit(s);
         return;
     }
 
-    // 2. Doc cam bien & chay ItemDetector (bo mau mep + trung vi N mau + D-11)
+    // 2. Do chieu cao ToF; chi xep hang doi khi phep do hop le (khong xep nhieu 1 mau)
     if (tofRead(s)) {
-        const double sample_mm =
-            s.has_valid_target ? static_cast<double>(s.distance_mm) : -1.0;
-        const sorter_core::DetectionResult res = s.detector.feed(sample_mm, now);
-        // Chan doan: moi mau ToF khi co vat (d, status, h tam tinh = H0 - d, trang thai detector).
-        // det: 0=Idle 1=Collecting(dang gom mau) 2=WaitClear(da chot, cho vat roi di)
-        if (s.detector.state() != sorter_core::ItemDetector::State::Idle || res.ready) {
-            printf("[%s] MAU d=%u st=%u h~%.1f det=%u%s\n", s.name, (unsigned)s.raw_mm,
-                   (unsigned)s.raw_status, s.detector_cfg.h0_mm - s.raw_mm,
-                   (unsigned)s.detector.state(), res.ready ? " <-CHOT" : "");
+        const double sample_mm = s.has_valid_target ? static_cast<double>(s.distance_mm) : -1.0;
+        const auto res = s.detector.feed(sample_mm, now);
+        const bool running = system_fsm.state() == sorter_core::SystemState::Running;
+        if (res.started) {
+            printf(">>> [%s] PHAT HIEN VAT qua ToF (d=%u mm, H0=%.1f mm)\n",
+                   s.name, (unsigned)s.distance_mm, s.detector_cfg.h0_mm);
         }
         if (res.ready) {
-            printf("[%s] KET QUA: d_med=%.1f h=%.1f H0=%.1f L=[%.0f,%.0f] M=[%.0f,%.0f] -> size=%s action=%s%s\n",
-                   s.name, res.median_distance_mm, res.height_mm, s.detector_cfg.h0_mm,
-                   s.detector_cfg.l_min_mm, s.detector_cfg.l_max_mm,
-                   s.detector_cfg.m_min_mm, s.detector_cfg.m_max_mm, sizeName(res.size),
-                   res.action == sorter_core::Action::Push ? "PUSH" :
-                   res.action == sorter_core::Action::Missed ? "MISSED" : "PASS",
-                   system_fsm.state() == sorter_core::SystemState::Running ? "" : " (KHONG CHAY: chi log)");
-        }
-        if (res.ready && system_fsm.state() == sorter_core::SystemState::Running) {
-            if (res.action == sorter_core::Action::Push) {
-                const uint32_t td = sorter_core::compute_trigger_delay_ms(s.geometry);
+            const char *act_str =
+                res.action == sorter_core::Action::Push ? "DAY (PUSH)" :
+                res.action == sorter_core::Action::Missed ? "BO LO (MISSED)" :
+                res.action == sorter_core::Action::Invalid ? "LOI DO (INVALID)" : "CHO QUA (PASS)";
+            printf(">>> [%s] DO XONG: mau=%u (giu %u) | d_med=%.1f mm | CHIEU CAO h=%.1f mm => QUYET DINH: SIZE %s -> %s [st=%u]%s\n",
+                   s.name, (unsigned)res.total_samples, (unsigned)res.kept_samples,
+                   res.median_distance_mm, res.height_mm, sizeName(res.size),
+                   act_str, (unsigned)res.status, running ? "" : " (CHI LOG - CHUA CHAY)");
+            if (running) {
+                const bool valid_decision =
+                    res.action == sorter_core::Action::Push || res.action == sorter_core::Action::Pass;
+                const bool push = res.action == sorter_core::Action::Push;
                 if (s.servo) {
-                    if (!s.servo_gate.enqueue(true, now))
-                        printf("[%s] CANH BAO: Hang doi servo day!\n", s.name);
-                } else if (!s.actuator.enqueue(res.t0_ms, td)) {
-                    printf("[%s] CANH BAO: Hang doi hen gio day!\n", s.name);
+                    if (valid_decision) {
+                        servoQueuePush(s, push, now);
+                        printf(">>> [%s] HANG DOI: da xep lenh [%s] cho LM393 (dang cho: %u ve)\n",
+                               s.name, push ? "DAY" : "CHO QUA", (unsigned)s.servo_gate.q_count);
+                    }
+                } else if (push) {
+                    if (!s.actuator.enqueue(res.t0_ms, sorter_core::compute_trigger_delay_ms(s.geometry)))
+                        printf("[%s] CANH BAO: Hang doi hen gio day!\n", s.name);
                 }
-                ++s.total_count;
-                printf("[%s] PHAT HIEN #%lu: d_med=%.1f h=%.1fmm size=%s -> PUSH (td=%lu ms)\n",
-                       s.name, (unsigned long)s.total_count, res.median_distance_mm,
-                       res.height_mm, sizeName(res.size), (unsigned long)td);
-            } else if (res.action == sorter_core::Action::Missed) {
-                ++s.missed_count;
-                if (s.servo && !s.servo_gate.enqueue(false, now))
-                    printf("[%s] CANH BAO: Hang doi servo day!\n", s.name);
-                printf("[%s] CANH BAO: L lot qua Tram 1 (h=%.1fmm) -> MISSED (khong day)\n",
-                       s.name, res.height_mm);
-            } else if (res.action == sorter_core::Action::Pass) {
-                if (s.servo && !s.servo_gate.enqueue(false, now))  // moi phoi deu chiem 1 cho
-                    printf("[%s] CANH BAO: Hang doi servo day!\n", s.name);
-                if (s.detector_cfg.station == 2 && res.size == sorter_core::Size::S) {
-                    ++tray_s_count;
-                }
-                printf("[%s] QUA TRAM: h=%.1fmm size=%s -> PASS\n",
-                       s.name, res.height_mm, sizeName(res.size));
+                if (push) ++s.total_count;
+                if (res.action == sorter_core::Action::Missed || res.action == sorter_core::Action::Invalid)
+                    ++s.missed_count;
+                if (s.detector_cfg.station == 2 && res.size == sorter_core::Size::M)
+                    ++tray_m_count;
             }
+            s.measurement_ticket = 0;
         }
     }
 
@@ -670,6 +900,22 @@ static void printStatus() {
             printf("%s: d=%4umm [%-8s | #%2lu] ", s.name, s.distance_mm, stateName(s.state), (unsigned long)s.total_count);
         }
     }
+#if USE_SORTER_ENGINE
+    printf("| FSM=%-7s G18=%u ST19=%u SP20=%u ES21=%u G22=%u RL26=%u | LM1=%u(%c) LM2=%u(%c) | SV=(%u,%u) Q=(%u,%u)",
+           fsmStateName(system_fsm.state()),
+           (unsigned)gpio_get(18),
+           (unsigned)gpio_get(START_PIN),
+           (unsigned)gpio_get(STOP_PIN),
+           (unsigned)gpio_get(ESTOP_PIN),
+           (unsigned)gpio_get(22),
+           RELAY_ACTIVE_LEVEL >= 0 ? (unsigned)gpio_get_out_level(RELAY_PIN) : 0u,
+           (unsigned)lm393Raw(stations[0]), lm393Active(stations[0]) ? 'V' : '-',
+           (unsigned)lm393Raw(stations[1]), lm393Active(stations[1]) ? 'V' : '-',
+           (unsigned)stations[0].servo_us,
+           (unsigned)stations[1].servo_us,
+           (unsigned)stations[0].servo_gate.q_count,
+           (unsigned)stations[1].servo_gate.q_count);
+#endif
     printf("\n");
 }
 
@@ -683,6 +929,9 @@ alignas(32) static uint32_t network_stack[2048];
 // One rule set for both the permissions shown on the web and the checks before acting.
 static const char *denyReason(pegatron_action action, unsigned station) {
 #if USE_SORTER_ENGINE
+    if (action == PEGATRON_ENABLE || action == PEGATRON_TEST) {
+        if (const char *reason = controlBlockReason()) return reason;
+    }
     switch (action) {
     case PEGATRON_ENABLE:
         if (system_fsm.state() == sorter_core::SystemState::Running) return "ALREADY_SORTING";
@@ -782,6 +1031,7 @@ static pegatron_snapshot makeSnapshot() {
     const int references[] = {PEGATRON_REFERENCE_1_MM, PEGATRON_REFERENCE_2_MM};
     pegatron_snapshot snapshot{};
 #if USE_SORTER_ENGINE
+    snapshot.estop = estopTriggered() ? PEGATRON_TRUE : PEGATRON_FALSE;
     const auto fsm_state = system_fsm.state();
     snapshot.mode = (fsm_state == sorter_core::SystemState::Fault ||
                      fsm_state == sorter_core::SystemState::Estop)
@@ -820,8 +1070,8 @@ static pegatron_snapshot makeSnapshot() {
     snapshot.tray_confirmed[0] = true;
     snapshot.tray_confirmed[1] = true;
     snapshot.tray_confirmed[2] = true;
-    snapshot.tray_count[0] = tray_s_count;
-    snapshot.tray_count[1] = stations[1].total_count;
+    snapshot.tray_count[0] = stations[1].total_count;
+    snapshot.tray_count[1] = tray_m_count;
     snapshot.tray_count[2] = stations[0].total_count;
 #endif
     return snapshot;
@@ -843,7 +1093,7 @@ static void networkWorker() {
     while (true) {
         bool changed = false;
         while (queue_try_remove(&snapshot_queue, &next)) {
-            changed |= !have_snapshot || next.mode != snapshot.mode ||
+            changed |= !have_snapshot || next.mode != snapshot.mode || next.estop != snapshot.estop ||
                 next.tof_unavailable[0] != snapshot.tof_unavailable[0] ||
                 next.tof_unavailable[1] != snapshot.tof_unavailable[1];
             snapshot = next;
@@ -910,14 +1160,19 @@ static void runCalibC1() {
             continue;
         }
         const auto res = sorter_core::compute_c1_baseline(samples[i], count[i], 1.0);
+        if (res.h0_mm < 75.0 || res.h0_mm > 120.0) {
+            printf("[%s] CALIB C1 BO QUA: H0=%.1fmm bat thuong (co vat che ToF luc bat nguon?) -> giu H0=%.1fmm\n",
+                   s.name, res.h0_mm, s.detector_cfg.h0_mm);
+            continue;
+        }
         printf("[%s] CALIB C1 (%u mau): H0=%.1fmm, sigma0=%.2fmm -> %s\n",
                s.name, (unsigned)res.valid_count, res.h0_mm, res.sigma_mm,
                res.ok ? "DAT" : "NHIEU (>1mm)");
         s.detector_cfg.h0_mm = res.h0_mm;
-        s.detector = sorter_core::ItemDetector(s.detector_cfg);
+        s.detector.set_config(s.detector_cfg);
     }
 
-    if (was_running) {
+    if (was_running && !controlBlockReason()) {
         system_fsm.request_start();
         sorting_enabled = (system_fsm.state() == sorter_core::SystemState::Running);
     }
@@ -926,8 +1181,11 @@ static void runCalibC1() {
 static bool applyStationConfig(double l_min, double l_max, double m_min, double m_max,
                                uint32_t s1_on, uint32_t s1_td,
                                uint32_t s2_on, uint32_t s2_td, uint32_t min_off) {
-    if (l_min < 0.0 || l_min >= l_max || l_max > 300.0 ||
-        m_min < 0.0 || m_min >= m_max || m_max > 300.0 ||
+    if (system_fsm.state() != sorter_core::SystemState::Idle ||
+        !sorter_core::is_finite(l_min) || !sorter_core::is_finite(l_max) ||
+        !sorter_core::is_finite(m_min) || !sorter_core::is_finite(m_max) ||
+        l_min < 0.0 || l_min >= l_max || l_max > 300.0 ||
+        m_min <= S_HEIGHT_MIN_MM || m_min >= m_max || m_max > 300.0 ||
         s1_on < 50 || s1_on > 600 ||
         s2_on < 50 || s2_on > 600 ||
         s1_td != 0 || s2_td != 0 ||  // LM393 xac nhan vi tri; do tre ToF khong dung
@@ -938,6 +1196,7 @@ static bool applyStationConfig(double l_min, double l_max, double m_min, double 
     const uint32_t td_vals[2] = { s1_td, s2_td };
     for (int i = 0; i < 2; ++i) {
         Station &s = stations[i];
+        stationRelease(s, millis());
         s.on_time_ms = on_vals[i];
         if (s.servo) s.servo_gate.push_ms = on_vals[i];
         s.travel_delay_ms = td_vals[i];
@@ -954,8 +1213,8 @@ static bool applyStationConfig(double l_min, double l_max, double m_min, double 
             s.min_mm = s.detector_cfg.h0_mm > l_max ? static_cast<uint16_t>(s.detector_cfg.h0_mm - l_max) : 0;
             s.max_mm = s.detector_cfg.h0_mm > l_min ? static_cast<uint16_t>(s.detector_cfg.h0_mm - l_min) : 0;
         } else {
-            s.min_mm = s.detector_cfg.h0_mm > m_max ? static_cast<uint16_t>(s.detector_cfg.h0_mm - m_max) : 0;
-            s.max_mm = s.detector_cfg.h0_mm > m_min ? static_cast<uint16_t>(s.detector_cfg.h0_mm - m_min) : 0;
+            s.min_mm = s.detector_cfg.h0_mm > m_min ? static_cast<uint16_t>(s.detector_cfg.h0_mm - m_min) : 0;
+            s.max_mm = s.detector_cfg.h0_mm > s.detector_cfg.s_min_mm ? static_cast<uint16_t>(s.detector_cfg.h0_mm - s.detector_cfg.s_min_mm) : 0;
         }
     }
     printf("[CFG] OK L=[%.1f,%.1f] M=[%.1f,%.1f] S1=(on=%lu,td=%lu) S2=(on=%lu,td=%lu) OFF=%lu\n",
@@ -1024,6 +1283,10 @@ static void handleSerialCommands() {
             }
             printf("[CLI] -> PAUSE (IDLE)\n");
         } else {
+            if (const char *reason = controlBlockReason()) {
+                printf("[CLI] START TU CHOI: %s\n", reason);
+                return;
+            }
             if (system_fsm.state() == sorter_core::SystemState::Fault) {
                 system_fsm.request_reset(false);
             }
@@ -1032,6 +1295,10 @@ static void handleSerialCommands() {
             printf("[CLI] -> START: %s (%s)\n", r.ok ? "RUNNING" : "TU CHOI", r.reason);
         }
     } else if (ch == '1' || ch == '2') {
+        if (const char *reason = controlBlockReason()) {
+            printf("[CLI] TEST TU CHOI: %s\n", reason);
+            return;
+        }
         if (system_fsm.state() != sorter_core::SystemState::Idle) {
             printf("[CLI] Dang %s - nhan 'p' de tam dung truoc khi test Solenoid.\n",
                    fsmStateName(system_fsm.state()));
@@ -1074,6 +1341,20 @@ static void handleSerialCommands() {
 int main() {
     stdio_init_all();
 
+#if USE_SORTER_ENGINE
+    const uint input_pins[] = {18, START_PIN, STOP_PIN, ESTOP_PIN, 22};
+    for (const uint pin : input_pins) {
+        gpio_init(pin);
+        gpio_set_dir(pin, GPIO_IN);
+        gpio_pull_up(pin);
+    }
+    if (RELAY_ACTIVE_LEVEL >= 0) {
+        gpio_init(RELAY_PIN);
+        gpio_put(RELAY_PIN, RELAY_ACTIVE_LEVEL);
+        gpio_set_dir(RELAY_PIN, GPIO_OUT);
+    }
+#endif
+
     for (int i = 0; i < 30 && !stdio_usb_connected(); i++) sleep_ms(100);
     printf("\n=======================================================\n");
     printf("   BANG TAI PHAN LOAI TU DONG - Raspberry Pi Pico 2 W   \n");
@@ -1104,13 +1385,15 @@ int main() {
         cfg.l_max_mm = L_HEIGHT_MAX_MM;
         cfg.m_min_mm = M_HEIGHT_MIN_MM;
         cfg.m_max_mm = M_HEIGHT_MAX_MM;
-        cfg.n_samples = MEDIAN_SAMPLES;
-        cfg.clear_samples = CLEAR_COUNT;
-        cfg.discard_first_edge_sample = true;
-        cfg.use_peak = (i == 0);  // giu nguyen cach do cua tung tram
+        cfg.s_min_mm = S_HEIGHT_MIN_MM;
+        cfg.min_valid_samples = MIN_VALID_SAMPLES;
+        cfg.clear_samples = 2;
         cfg.max_valid_distance_mm = static_cast<double>(MAX_VALID_RANGE_MM);
         s.detector_cfg = cfg;
-        s.detector = sorter_core::ItemDetector(s.detector_cfg);
+        if (!s.detector.set_config(s.detector_cfg)) {
+            printf("[%s] LOI CAU HINH ItemDetector (h0=%.1f min_samples=%u)!\n",
+                   s.name, s.detector_cfg.h0_mm, (unsigned)s.detector_cfg.min_valid_samples);
+        }
         s.actuator = sorter_core::SolenoidActuator(
             sorter_core::SolenoidConfig{s.on_time_ms, SOLENOID_MAX_ON_MS, 60000, SOLENOID_RATED_DUTY, 0.80, SOLENOID_MIN_OFF_MS});
         s.geometry = sorter_core::TriggerGeometry{0.0, 0.0, 0.0, 0.0, 0.0, s.travel_delay_ms};
@@ -1126,16 +1409,29 @@ int main() {
     }
 #if USE_SORTER_ENGINE
     system_fsm.init_ok();
-    system_fsm.request_start();
     sorting_enabled = (system_fsm.state() == sorter_core::SystemState::Running);
     // No fixed reference -> measure H0 on the EMPTY belt at boot (82 mm default is rarely right).
     if (PEGATRON_REFERENCE_1_MM <= 0 || PEGATRON_REFERENCE_2_MM <= 0) {
         printf("[BOOT] De BANG TAI TRONG: tu do H0...\n");
         runCalibC1();
     }
+#if AUTO_START_ON_BOOT
+    {
+        const bool estop = estopTriggered();
+        const bool stop = gpio_get(STOP_PIN);
+        system_fsm.update_inputs(stop, estop);
+        if (!estop && !stop && RELAY_ACTIVE_LEVEL >= 0) {
+            system_fsm.request_start();
+        }
+        sorting_enabled = (system_fsm.state() == sorter_core::SystemState::Running);
+        relayUpdate();
+        printf("[BOOT] AUTO-START: %s\n",
+               sorting_enabled ? "RUNNING" : (controlBlockReason() ? controlBlockReason() : "IDLE"));
+    }
+#endif
 #endif
 
-    const bool network_enabled = PEGATRON_WIFI_SSID[0] != '\0';
+    const bool network_enabled = (ENABLE_WIFI != 0) && (PEGATRON_WIFI_SSID[0] != '\0');
     if (network_enabled) {
         queue_init(&snapshot_queue, sizeof(pegatron_snapshot), 4);
         queue_init(&command_queue, sizeof(pegatron_command), 4);
@@ -1147,6 +1443,7 @@ int main() {
 
     while (true) {
 #if USE_SORTER_ENGINE
+        pollControls(millis());
         handleSerialCommands();
 #endif
         stationUpdate(stations[0]);
@@ -1158,6 +1455,9 @@ int main() {
             printStatus();
         }
         if (network_enabled) runCommands();
+#if USE_SORTER_ENGINE
+        pollControls(millis());
+#endif
         if (network_enabled && now - last_snapshot >= 100) {
             last_snapshot = now;
             const auto snapshot = makeSnapshot();

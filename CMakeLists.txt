@@ -94,3 +94,9 @@ pico_enable_stdio_uart(TestTwoServos 0)
 pico_enable_stdio_usb(TestTwoServos 1)
 pico_add_extra_outputs(TestTwoServos)
 
+add_executable(TestRelay test_relay.cpp)
+target_link_libraries(TestRelay PRIVATE pico_stdlib)
+pico_enable_stdio_uart(TestRelay 0)
+pico_enable_stdio_usb(TestRelay 1)
+pico_add_extra_outputs(TestRelay)
+

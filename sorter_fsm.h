@@ -105,6 +105,13 @@ public:
 
     constexpr void release_estop() noexcept { estop_active_ = false; }
 
+    // NC inputs read high when pressed or disconnected.
+    constexpr void update_inputs(bool stop_open, bool estop_open) noexcept {
+        if (estop_open) trigger_estop();
+        else release_estop();
+        if (stop_open || estop_open) request_stop();
+    }
+
     // ESTOP can only clear via physical RESET after releasing E-STOP (SORT-R01).
     constexpr TransitionResult request_reset(bool is_hard_button) noexcept {
         if (state_ == SystemState::Estop) {

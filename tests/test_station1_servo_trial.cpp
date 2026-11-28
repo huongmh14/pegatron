@@ -1,6 +1,7 @@
 // Compile-time check (works where EXE is blocked):
 //   g++ -std=c++17 -Wall -Wextra -Werror -fsyntax-only tests/test_station1_servo_trial.cpp
 #include "../station1_servo_trial_logic.h"
+#include "../sorter_core.h"
 
 namespace {
 using E = TrialEvent;
@@ -50,13 +51,18 @@ constexpr bool l_pushes_once_with_set_timings() {
     return r.push == 0 && r.unmatched == 0 && g.q_count == 0;
 }
 
-constexpr bool lm393_before_tof_decision_still_pushes() {
-    Station1TrialGate g = base();
-    Run r;
-    run(g, r, 0, 50, 0, 300);  // item already at LM393, ToF not decided yet
-    g.enqueue(true, 50);
-    run(g, r, 50, 1000, 0, 300);
-    return r.push == 1 && r.unmatched == 0;
+constexpr bool early_lm393_retires_pending_ticket() {
+    auto g = base();
+    const auto early = g.reserve(0);
+    const auto next = g.reserve(10);
+    g.tick(100, true, true, true);
+    if (g.tick(120, true, true, true) != E::NotReady || g.q_count != 1) return false;
+    if (g.complete(early, true) || !g.complete(next, false)) return false;
+    if (g.complete(next, true)) return false; // a decision is immutable
+    g.tick(200, true, true, false);
+    g.tick(260, true, true, false);
+    g.tick(300, true, true, true);
+    return g.tick(320, true, true, true) == E::Passed && g.q_count == 0 && g.synchronized;
 }
 
 constexpr bool s_m_pass_without_push() {
@@ -86,7 +92,7 @@ constexpr bool two_stations_keep_separate_queues() {
     Run r1, r2;
     first.enqueue(true, 0);    // L at station 1
     second.enqueue(false, 0);  // L missed station 1, must pass station 2
-    second.enqueue(true, 10);  // M must still push at station 2
+    second.enqueue(true, 10);  // S must push at station 2
     run(first, r1, 0, 800, 100, 250);
     run(second, r2, 0, 400, 100, 200);
     run(second, r2, 400, 1000, 500, 600);
@@ -133,7 +139,10 @@ constexpr bool tof_loss_aborts_and_clears_queue() {
     Station1TrialGate g = base();
     g.enqueue(true, 0);
     if (g.tick(5, true, false, true) != E::SensorLost) return false;
-    return g.q_count == 0 && g.tick(10, true, true, true) == E::None;
+    if (g.q_count != 0 || g.synchronized || g.tick(10, true, true, true) != E::None) return false;
+    if (g.enqueue(true, 11) || g.force_push(12)) return false;
+    g.tick(15, false, true, false);
+    return g.synchronized && g.enqueue(true, 20);
 }
 
 constexpr bool disable_during_push_returns_idle() {
@@ -159,8 +168,71 @@ constexpr bool manual_push_only_from_idle() {
     return g.tick(250, true, true, false) == E::Returned;
 }
 
+constexpr bool arrivals_during_push_and_recovery_are_consumed() {
+    auto g = base(); g.position_stable_ms = 0; g.clear_ms = 0;
+    g.enqueue(true, 0); g.enqueue(true, 0); g.enqueue(false, 0); g.enqueue(true, 0);
+    if (g.tick(0, true, true, true) != E::Push) return false;
+    g.tick(10, true, true, false);
+    if (g.tick(11, true, true, true) != E::Busy || g.q_count != 2) return false;
+    g.tick(12, true, true, false);
+    if (g.tick(13, true, true, true) != E::Passed || g.q_count != 1) return false;
+    if (g.tick(250, true, true, true) != E::Returned) return false;
+    g.tick(251, true, true, false);
+    if (g.tick(252, true, true, true) != E::Busy || g.q_count != 0) return false;
+    return g.tick(450, true, true, false) == E::Ready && g.stage == S::Idle;
+}
+
+constexpr bool synchronization_faults_latch_until_reset() {
+    auto g = base();
+    const auto old = g.reserve(0);
+    g.complete(old, false); // even an expired pass entry means alignment is unknown
+    if (g.tick(1500, true, true, false) != E::TimedOut || g.synchronized) return false;
+    if (g.enqueue(true, 1501) || g.force_push(1501) || g.complete(old, true)) return false;
+    g.reset();
+    const auto fresh = g.reserve(1502);
+    if (old == fresh || g.complete(old, true) || !g.complete(fresh, true)) return false;
+    g.reset();
+    for (std::size_t i = 0; i < g.QUEUE_MAX; ++i) g.reserve(1600);
+    if (g.reserve(1600) != 0 || g.synchronized || g.q_count != 0) return false;
+    if (g.tick(1601, true, true, true) != E::SyncLost) return false;
+    if (g.tick(1602, true, true, true) != E::None) return false;
+    g.reset();
+    g.tick(1700, true, true, true);
+    return g.tick(1720, true, true, true) == E::Unmatched && !g.synchronized;
+}
+
+constexpr bool gate_clock_wrap_is_safe() {
+    auto g = base();
+    const std::uint32_t start = 0xfffffff0U;
+    g.enqueue(true, start);
+    g.tick(start, true, true, true);
+    if (g.tick(start + 20, true, true, true) != E::Push) return false;
+    return g.tick(start + 270, true, true, true) == E::Returned;
+}
+
+constexpr bool detector_and_gate_reject_late_completion() {
+    sorter_core::StationConfig c;
+    c.station = 1;
+    sorter_core::ItemDetector d(c);
+    auto g = base();
+    const auto start = d.feed(30, 0);
+    if (!start.started) return false;
+    const auto ticket = g.reserve(start.t0_ms);
+    g.tick(10, true, true, true);
+    if (g.tick(30, true, true, true) != E::NotReady) return false;
+    for (std::uint32_t i = 1; i < 10; ++i) d.feed(30, 30 + i * 10);
+    d.feed(100, 140);
+    const auto done = d.feed(100, 150);
+    return done.ready && done.action == sorter_core::Action::Push &&
+           !g.complete(ticket, true) && g.q_count == 0 && g.stage == S::Idle;
+}
+
+static_assert(arrivals_during_push_and_recovery_are_consumed());
+static_assert(synchronization_faults_latch_until_reset());
+static_assert(gate_clock_wrap_is_safe());
+static_assert(detector_and_gate_reject_late_completion());
 static_assert(l_pushes_once_with_set_timings());
-static_assert(lm393_before_tof_decision_still_pushes());
+static_assert(early_lm393_retires_pending_ticket());
 static_assert(s_m_pass_without_push());
 static_assert(queue_keeps_order_l_m_l());
 static_assert(two_stations_keep_separate_queues());

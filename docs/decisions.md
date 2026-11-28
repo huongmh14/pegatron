@@ -20,6 +20,10 @@ Nguồn: README.md, `main.cpp` (commit `e181c00`), `CMakeLists.txt`, `docs/confl
 | D-14 | Tách cấu hình hai trạm thành hai khoảng chiều cao vật độc lập (`L=[l_min_mm, l_max_mm]`, `M=[m_min_mm, m_max_mm]`) tính theo `H0` riêng từng cảm biến, không ép hai ô dính nhau hay ràng buộc `H0` trên Web UI, cho phép tạo khe đệm chống nhiễu ToF (vật rơi vào khe đệm/ngoài khoảng trả về `S` đi thẳng). | Người dùng chốt 2026-11-25 |
 | D-15 | Thay cơ cấu đẩy trạm 2 bằng servo GP11 + LM393 DO GP13 theo luồng ToF → LM393 → servo của trạm 1; hai servo dùng chung PWM slice nhưng có kênh và gate riêng. Giữ phân loại L/M/S và cách đo ToF từng trạm; độ trễ gạt bằng 0. Thay thế phần đấu solenoid/L298N của D-05 trong firmware C++. | Người dùng yêu cầu 2026-11-26; `main.cpp`, README |
 
+| D-16 | Trạm 1 đẩy L, trạm 2 đẩy S, M đi thẳng; thay thế phân tuyến D-13/D-15. Mỗi trạm đo lại các phôi thực sự đi tới cảm biến của nó. Phép đo ngoài khoảng/khe đệm là Invalid và không đẩy, thay thế quy tắc coi tất cả ngoài L/M là S của D-14. | Người dùng chốt trạm 2 phân loại S; yêu cầu viết lại thuật toán 2026-11-27 |
+| D-17 | Thu trọn phiên ToF; bỏ floor(N/5) mẫu mỗi đầu theo thứ tự thu rồi lấy trung vị mẫu hợp lệ ở giữa. Mẫu lỗi giữ vị trí thời gian; thiếu mẫu/timeout/tràn bộ đệm không đẩy. Giữ vé FIFO từ đầu phiên, chốt đúng vé; LM393 đến sớm hoặc servo bận vẫn tiêu thụ vé, không đẩy muộn. | `sorter_core.h`, `station1_servo_trial_logic.h`, kiểm tra C++17 2026-11-27 |
+| D-18 | Mất ToF, FIFO đầy/quá hạn hoặc LM393 không có vé sẽ khóa đẩy trạm đến khi dừng, dọn băng tải và khởi động lại. Thay đổi khoảng chiều cao chỉ nhận khi IDLE. Ngưỡng, số mẫu và thời gian hiện tại cần hiệu chỉnh trên máy. | Tích hợp `main.cpp` 2026-11-27; `docs/thuat-toan-phan-loai.md` |
+
 ## Chưa xác nhận
 - Chạy trên Pico thật với dashboard: mới có build firmware (Pico SDK 2.3.1) và 10 test backend đạt.
 - Độ chính xác và loại chip cảm biến thực tế (xem `docs/debug-cam-bien.md`).

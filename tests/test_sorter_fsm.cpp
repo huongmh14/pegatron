@@ -10,6 +10,20 @@ namespace {
 
 using namespace sorter_core;
 
+constexpr bool test_nc_controls() {
+    SystemFsm fsm;
+    if (!fsm.init_ok().ok || !fsm.request_start().ok) return false;
+    fsm.update_inputs(true, false);
+    if (fsm.state() != SystemState::Idle) return false;
+    if (!fsm.request_start().ok) return false;
+    fsm.update_inputs(false, true);
+    if (fsm.state() != SystemState::Estop || fsm.request_start().ok) return false;
+    fsm.update_inputs(false, false);
+    if (fsm.request_start().ok || fsm.request_reset(false).ok) return false;
+    return fsm.request_reset(true).ok && fsm.state() == SystemState::Idle;
+}
+static_assert(test_nc_controls(), "NC stop and estop must stop and latch");
+
 constexpr bool test_system_fsm_sort_ac01() noexcept {
     SystemFsm fsm;
     if (fsm.state() != SystemState::Init || fsm.outputs_allowed()) return false;

@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PEGATRON · Bàn điều khiển phân loại</title>
-  <link rel="stylesheet" href="/static/style.css?v=6">
-  <script defer src="/static/dashboard.js?v=6"></script>
+  <link rel="stylesheet" href="/static/style.css?v=7">
+  <script defer src="/static/dashboard.js?v=7"></script>
   <script defer src="/static/wifi.js"></script>
 </head>
 <body>
@@ -44,12 +44,12 @@
     <p id="stale-warning" class="notice" hidden>Đang hiển thị dữ liệu cuối. Điều khiển từ dashboard đã khóa.</p>
 
     <section class="panel flow" aria-labelledby="flow-title">
-      <div class="panel-heading"><div><h2 id="flow-title">Hai trạm phân loại</h2><p>L được gạt tại Trạm 1, M được gạt tại Trạm 2. S đi thẳng tới cuối băng (không đẩy).</p></div></div>
+      <div class="panel-heading"><div><h2 id="flow-title">Hai trạm phân loại</h2><p>L được gạt tại Trạm 1, S được gạt tại Trạm 2. M đi thẳng tới cuối băng (không đẩy).</p></div></div>
       <div class="belt" aria-label="Thứ tự trên băng tải">
         <span class="belt-node">Đầu vào</span>
         <span class="belt-node" id="belt-node-1">Trạm 1 · <b class="l">Gạt L</b></span>
-        <span class="belt-node" id="belt-node-2">Trạm 2 · <b class="m">Gạt M</b></span>
-        <span class="belt-node">Khay <b class="s">S</b> (cuối băng)</span>
+        <span class="belt-node" id="belt-node-2">Trạm 2 · <b class="s">Gạt S</b></span>
+        <span class="belt-node">Khay <b class="m">M</b> (cuối băng)</span>
       </div>
       <div class="stations" id="stations"></div>
     </section>
@@ -67,7 +67,8 @@
             </div>
           </div>
           <div class="config-box">
-            <h3>Trạm 2 · <span class="m">Gạt M</span></h3>
+            <h3>Trạm 2 · <span class="s">Gạt S</span></h3>
+            <p>Giới hạn dưới của M cũng là ranh giới trên của S.</p>
             <div class="config-grid">
               <div><label for="cfg-m-min">Chiều cao M từ (mm)</label><input id="cfg-m-min" type="number" step="0.5" min="0" max="299" required></div>
               <div><label for="cfg-m-max">Chiều cao M đến (mm)</label><input id="cfg-m-max" type="number" step="0.5" min="1" max="300" required></div>
@@ -90,6 +91,11 @@
     <div class="panel-heading"><div><h2 id="control-title">Điều khiển và bảo trì</h2><p>Tạm dừng phân loại sẽ khóa nhịp gạt mới. Băng tải có thể vẫn chuyển động.</p></div></div>
     <div id="controls" class="controls"></div>
     <p class="command-feedback" id="command-feedback" role="status">Kết quả lệnh sẽ hiển thị tại đây.</p>
+  </section>
+
+  <section class="panel" aria-labelledby="console-title">
+    <div class="panel-heading"><div><h2 id="console-title">Console Pico</h2><p>200 dòng gần nhất từ cổng USB; lịch sử được lưu trên máy tính khi dashboard đang chạy.</p></div></div>
+    <pre id="console-log" class="console-log" tabindex="0" aria-label="Nhật ký Pico">Chưa có log USB.</pre>
   </section>
 
   <section id="lich-su" class="panel" aria-labelledby="history-title">

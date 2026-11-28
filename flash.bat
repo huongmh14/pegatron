@@ -24,6 +24,7 @@ set "BUILD=1"
 if /i "%~1"=="servo"   set "TARGET=TestServoTram1"
 if /i "%~1"=="servo2"  set "TARGET=TestTwoServos"
 if /i "%~1"=="tof"     set "TARGET=TestToF"
+if /i "%~1"=="relay"   set "TARGET=TestRelay"
 if /i "%~1"=="nobuild" set "BUILD=0"
 
 if /i "%BUILD%"=="0" goto :after_build

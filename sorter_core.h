@@ -10,7 +10,7 @@ namespace sorter_core {
 enum class Size { Invalid, S, M, L };
 enum class Action { Invalid, Pass, Push, Missed };
 
-constexpr std::size_t MAX_MEDIAN_SAMPLES = 9;
+constexpr std::size_t MAX_MEDIAN_SAMPLES = 256;
 
 constexpr bool is_finite(double x) noexcept {
     constexpr double inf = std::numeric_limits<double>::infinity();
@@ -25,28 +25,29 @@ constexpr Size classify(double height, double threshold_sm, double threshold_ml)
     return height <= threshold_sm ? Size::S : height <= threshold_ml ? Size::M : Size::L;
 }
 
-// D-14: Independent per-station height ranges for L (Tram 1) and M (Tram 2);
-// guard bands or values outside both ranges return Size::S (pass through).
+// L takes precedence at a shared boundary, then M. S occupies [s_min, m_min).
+// Out-of-range heights must never fall back to S: station 2 now pushes S.
 constexpr Size classify_ranges(double height, double m_min, double m_max,
-                               double l_min, double l_max) noexcept {
+                               double l_min, double l_max, double s_min = 5.0) noexcept {
     if (!is_finite(height) || !is_finite(m_min) || !is_finite(m_max) ||
         !is_finite(l_min) || !is_finite(l_max) ||
-        m_min < 0.0 || l_min < 0.0 || m_min >= m_max || l_min >= l_max) {
+        !is_finite(s_min) || s_min < 0.0 || s_min >= m_min ||
+        l_min < 0.0 || m_min >= m_max || l_min >= l_max) {
         return Size::Invalid;
     }
     if (height >= l_min && height <= l_max) return Size::L;
     if (height >= m_min && height <= m_max) return Size::M;
-    return Size::S;
+    return height >= s_min && height < m_min ? Size::S : Size::Invalid;
 }
 
-// SORT-R05 / D-13: Trạm 1 pushes L, Trạm 2 pushes M, S passes straight (no push).
+// Routing: station 1 pushes L, station 2 pushes S, M passes.
 // Missed must be reported by the caller, never actuated.
 constexpr Action route(Size size, unsigned station) noexcept {
     if (station != 1 && station != 2) return Action::Invalid;
     switch (size) {
-        case Size::S: return Action::Pass;
+        case Size::S: return station == 2 ? Action::Push : Action::Pass;
         case Size::L: return station == 1 ? Action::Push : Action::Missed;
-        case Size::M: return station == 2 ? Action::Push : Action::Pass;
+        case Size::M: return Action::Pass;
         default: return Action::Invalid;
     }
 }
@@ -61,31 +62,30 @@ constexpr double calibrate_height(double distance_mm, double h0_mm,
     return ((h0_mm - distance_mm) - c) / k;
 }
 
-// SORT-R03: deterministic fixed-buffer median without heap allocation.
-constexpr double median_of(const double* samples, std::size_t count) noexcept {
+// Sort the retained session buffer in place: do not copy 2 KB onto the Pico stack.
+// ponytail: insertion sort is O(n^2), bounded at 256; use selection if this limit grows.
+constexpr double median_of(double* samples, std::size_t count) noexcept {
     if (samples == nullptr || count == 0 || count > MAX_MEDIAN_SAMPLES) {
         return std::numeric_limits<double>::quiet_NaN();
     }
-    double buf[MAX_MEDIAN_SAMPLES]{};
     for (std::size_t i = 0; i < count; ++i) {
         if (!is_finite(samples[i])) {
             return std::numeric_limits<double>::quiet_NaN();
         }
-        buf[i] = samples[i];
     }
     for (std::size_t i = 1; i < count; ++i) {
-        double key = buf[i];
+        double key = samples[i];
         std::size_t j = i;
-        while (j > 0 && buf[j - 1] > key) {
-            buf[j] = buf[j - 1];
+        while (j > 0 && samples[j - 1] > key) {
+            samples[j] = samples[j - 1];
             --j;
         }
-        buf[j] = key;
+        samples[j] = key;
     }
     if ((count & 1U) != 0U) {
-        return buf[count / 2];
+        return samples[count / 2];
     }
-    return 0.5 * (buf[count / 2 - 1] + buf[count / 2]);
+    return 0.5 * (samples[count / 2 - 1] + samples[count / 2]);
 }
 
 struct StationConfig {
@@ -98,21 +98,15 @@ struct StationConfig {
     double threshold_sm_mm = 40.0;
     double threshold_ml_mm = 60.0;
     bool use_ranges = false;
+    double s_min_mm = 5.0;
     double m_min_mm = 7.0;
     double m_max_mm = 20.0;
     double l_min_mm = 22.0;
     double l_max_mm = 100.0;
-    std::size_t n_samples = 3;
+    std::size_t min_valid_samples = 10;
     std::size_t clear_samples = 2;
-    bool discard_first_edge_sample = true;
     double max_valid_distance_mm = 4000.0;
-    // Decide when the item leaves the beam, using its highest plateau (lowest windowed median)
-    // instead of the first n samples, which only see the rising edge of a moving item.
-    bool use_peak = false;
-    // use_peak: decide as soon as the windowed median rises this far above the peak (item falling away).
-    double peak_drop_mm = 8.0;
-    // use_peak: decide anyway after this long under the beam (stale H0 / item parked under the ToF).
-    std::uint32_t peak_timeout_ms = 2000;
+    std::uint32_t max_session_ms = 2000;
 };
 
 constexpr bool config_valid(const StationConfig& cfg) noexcept {
@@ -120,7 +114,9 @@ constexpr bool config_valid(const StationConfig& cfg) noexcept {
         ? (is_finite(cfg.m_min_mm) && is_finite(cfg.m_max_mm) &&
            cfg.m_min_mm >= 0.0 && cfg.m_min_mm < cfg.m_max_mm &&
            is_finite(cfg.l_min_mm) && is_finite(cfg.l_max_mm) &&
-           cfg.l_min_mm >= 0.0 && cfg.l_min_mm < cfg.l_max_mm)
+           cfg.l_min_mm >= 0.0 && cfg.l_min_mm < cfg.l_max_mm &&
+           is_finite(cfg.s_min_mm) &&
+           cfg.s_min_mm >= 0.0 && cfg.s_min_mm < cfg.m_min_mm)
         : (is_finite(cfg.threshold_sm_mm) && is_finite(cfg.threshold_ml_mm) &&
            cfg.threshold_sm_mm < cfg.threshold_ml_mm);
     return (cfg.station == 1 || cfg.station == 2) &&
@@ -131,10 +127,13 @@ constexpr bool config_valid(const StationConfig& cfg) noexcept {
            is_finite(cfg.k) && cfg.k > 0.0 &&
            is_finite(cfg.c) &&
            bounds_ok &&
-           cfg.n_samples >= 1 && cfg.n_samples <= MAX_MEDIAN_SAMPLES &&
-           cfg.clear_samples >= 1 &&
+           cfg.min_valid_samples >= 5 && cfg.min_valid_samples <= MAX_MEDIAN_SAMPLES &&
+           cfg.clear_samples >= 1 && cfg.clear_samples <= MAX_MEDIAN_SAMPLES &&
+           cfg.max_session_ms > 0 && cfg.max_session_ms < 0x80000000U &&
            is_finite(cfg.max_valid_distance_mm) && cfg.max_valid_distance_mm > cfg.h0_mm;
 }
+
+enum class MeasurementStatus { Valid, TooFewSamples, Timeout, BufferFull, InvalidHeight };
 
 struct DetectionResult {
     bool ready = false;
@@ -143,10 +142,13 @@ struct DetectionResult {
     double height_mm = 0.0;
     Size size = Size::Invalid;
     Action action = Action::Invalid;
+    bool started = false;
+    std::size_t total_samples = 0;
+    std::size_t kept_samples = 0;
+    MeasurementStatus status = MeasurementStatus::Valid;
 };
 
-// SORT-R02..R05 / SORT-AC02: per-station item detection, edge-sample discard,
-// median filtering, height calculation, D-11 routing, and WaitClear hysteresis.
+// One session per complete passage. Trim in acquisition order BEFORE sorting.
 class ItemDetector {
 public:
     enum class State { Idle, Collecting, WaitClear };
@@ -167,93 +169,83 @@ public:
         t0_ms_ = 0;
         sample_count_ = 0;
         clear_count_ = 0;
-        have_best_ = false;
     }
 
     constexpr DetectionResult feed(double distance_mm, std::uint32_t now_ms) noexcept {
         if (!config_valid(cfg_)) return {};
-        // Invalid/error samples never trigger detection and never unlock WaitClear (D-03).
-        if (!is_finite(distance_mm) || distance_mm <= 0.0 ||
-            distance_mm > cfg_.max_valid_distance_mm) {
+        const bool valid = is_finite(distance_mm) && distance_mm > 0.0 &&
+                           distance_mm <= cfg_.max_valid_distance_mm;
+        const bool clear = valid && distance_mm >= cfg_.h0_mm - cfg_.clear_delta_mm;
+        if (state_ == State::WaitClear) {
+            clear_count_ = clear ? clear_count_ + 1 : 0;
+            if (clear_count_ >= cfg_.clear_samples) reset();
             return {};
         }
-
-        const double detect_below = cfg_.h0_mm - cfg_.detect_delta_mm;
-        const double clear_at_or_above = cfg_.h0_mm - cfg_.clear_delta_mm;
-
-        switch (state_) {
-            case State::Idle: {
-                if (distance_mm < detect_below) {
-                    t0_ms_ = now_ms;
-                    sample_count_ = 0;
-                    state_ = State::Collecting;
-                    if (!cfg_.discard_first_edge_sample) {
-                        samples_[sample_count_++] = distance_mm;
-                        if (sample_count_ == cfg_.n_samples) {
-                            return finalize_(median_of(samples_, sample_count_));
-                        }
-                    }
-                }
-                return {};
-            }
-            case State::Collecting: {
-                if (distance_mm >= clear_at_or_above) {
-                    if (cfg_.use_peak && have_best_) return finalize_(best_median_);
-                    // Object left before N valid post-edge samples -> ignore glitch.
-                    reset();
-                    return {};
-                }
-                if (cfg_.use_peak) {
-                    if (have_best_ && now_ms - t0_ms_ >= cfg_.peak_timeout_ms) return finalize_(best_median_);
-                    if (sample_count_ == cfg_.n_samples) {
-                        for (std::size_t i = 1; i < sample_count_; ++i) samples_[i - 1] = samples_[i];
-                        --sample_count_;
-                    }
-                    samples_[sample_count_++] = distance_mm;
-                    if (sample_count_ == cfg_.n_samples) {
-                        const double m = median_of(samples_, sample_count_);
-                        if (!have_best_ || m < best_median_) {
-                            best_median_ = m;
-                            have_best_ = true;
-                        } else if (m >= best_median_ + cfg_.peak_drop_mm) {
-                            return finalize_(best_median_);
-                        }
-                    }
-                    return {};
-                }
-                samples_[sample_count_++] = distance_mm;
-                if (sample_count_ == cfg_.n_samples) {
-                    return finalize_(median_of(samples_, sample_count_));
-                }
-                return {};
-            }
-            case State::WaitClear: {
-                if (distance_mm >= clear_at_or_above) {
-                    ++clear_count_;
-                    if (clear_count_ >= cfg_.clear_samples) {
-                        reset();
-                    }
-                } else {
-                    clear_count_ = 0;
-                }
-                return {};
-            }
+        if (state_ == State::Idle) {
+            if (!valid || distance_mm >= cfg_.h0_mm - cfg_.detect_delta_mm) return {};
+            state_ = State::Collecting;
+            t0_ms_ = now_ms;
+            samples_[sample_count_++] = distance_mm;
+            DetectionResult result{};
+            result.started = true;
+            result.t0_ms = now_ms;
+            return result;
         }
+        if (now_ms - t0_ms_ >= cfg_.max_session_ms)
+            return finish_(MeasurementStatus::Timeout, false);
+
+        clear_count_ = clear ? clear_count_ + 1 : 0;
+        if (clear_count_ >= cfg_.clear_samples) {
+            // Earlier clear-confirmation samples were buffered, but are not part of the object.
+            sample_count_ -= clear_count_ - 1;
+            return finish_(MeasurementStatus::Valid, true);
+        }
+        if (sample_count_ == MAX_MEDIAN_SAMPLES)
+            return finish_(MeasurementStatus::BufferFull, false);
+        // Invalid readings retain their temporal slot, but cannot contribute to the median.
+        samples_[sample_count_++] = valid ? distance_mm : 0.0;
         return {};
     }
 
+    // Chot som khi phoi cham LM393 trong luc duoi phoi chua kip roi khoi vung do ToF.
+    constexpr DetectionResult finish_early() noexcept {
+        if (state_ != State::Collecting || sample_count_ < cfg_.min_valid_samples) return {};
+        return finish_(MeasurementStatus::Valid, false);
+    }
+
 private:
-    constexpr DetectionResult finalize_(double med_d) noexcept {
-        const double h = calibrate_height(med_d, cfg_.h0_mm, cfg_.k, cfg_.c);
-        const Size sz = cfg_.use_ranges
-            ? classify_ranges(h, cfg_.m_min_mm, cfg_.m_max_mm, cfg_.l_min_mm, cfg_.l_max_mm)
-            : classify(h, cfg_.threshold_sm_mm, cfg_.threshold_ml_mm);
-        const Action act = route(sz, cfg_.station);
-        const std::uint32_t t0 = t0_ms_;
-        state_ = State::WaitClear;
-        sample_count_ = 0;
-        clear_count_ = 0;
-        return DetectionResult{true, t0, med_d, h, sz, act};
+    constexpr DetectionResult finish_(MeasurementStatus status, bool cleared) noexcept {
+        DetectionResult result{};
+        result.ready = true;
+        result.t0_ms = t0_ms_;
+        result.total_samples = sample_count_;
+        result.status = status;
+        if (status == MeasurementStatus::Valid) {
+            const std::size_t trim = sample_count_ / 5;
+            std::size_t valid_count = 0;
+            for (std::size_t i = 0; i < sample_count_; ++i)
+                if (samples_[i] > 0.0) ++valid_count;
+            std::size_t kept = 0;
+            for (std::size_t i = trim; i < sample_count_ - trim; ++i)
+                if (samples_[i] > 0.0) samples_[kept++] = samples_[i];
+            result.kept_samples = kept;
+            const std::size_t min_kept = cfg_.min_valid_samples - 2 * (cfg_.min_valid_samples / 5);
+            if (valid_count < cfg_.min_valid_samples || kept < min_kept) {
+                result.status = MeasurementStatus::TooFewSamples;
+            } else {
+                result.median_distance_mm = median_of(samples_, kept);
+                result.height_mm = calibrate_height(result.median_distance_mm, cfg_.h0_mm, cfg_.k, cfg_.c);
+                result.size = cfg_.use_ranges
+                    ? classify_ranges(result.height_mm, cfg_.m_min_mm, cfg_.m_max_mm,
+                                      cfg_.l_min_mm, cfg_.l_max_mm, cfg_.s_min_mm)
+                    : classify(result.height_mm, cfg_.threshold_sm_mm, cfg_.threshold_ml_mm);
+                result.action = route(result.size, cfg_.station);
+                if (result.size == Size::Invalid) result.status = MeasurementStatus::InvalidHeight;
+            }
+        }
+        reset();
+        if (!cleared) state_ = State::WaitClear;
+        return result;
     }
 
     StationConfig cfg_;
@@ -262,8 +254,6 @@ private:
     double samples_[MAX_MEDIAN_SAMPLES]{};
     std::size_t sample_count_ = 0;
     std::size_t clear_count_ = 0;
-    double best_median_ = 0.0;
-    bool have_best_ = false;
 };
 
 }  // namespace sorter_core

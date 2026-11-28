@@ -8,6 +8,9 @@ const reasons = {
   MONITOR_ONLY: "Máy thật đang ở chế độ chỉ giám sát.",
   ESTOP_UNKNOWN: "Chưa xác nhận được trạng thái dừng khẩn tại máy.",
   ESTOP: "Dừng khẩn đang tác động.",
+  ESTOP_ACTIVE: "Dừng khẩn đang tác động hoặc cần xác nhận lại tại máy.",
+  STOP_ACTIVE: "Nút STOP đang nhấn hoặc mạch STOP bị hở.",
+  RELAY_UNCONFIGURED: "Chưa xác nhận mức kích relay; không thể chạy.",
   FAULT_LOCKED: "Xử lý và xóa lỗi tại máy.",
   LOCAL_ARM_REQUIRED: "Cần cấp quyền điều khiển tại máy.",
   IDLE_AND_HOME_REQUIRED: "Cần tạm dừng và xác nhận cả hai cánh ở HOME.",
@@ -62,8 +65,8 @@ function write(id, text) {
 }
 
 for (const i of [1, 2]) {
-  const targetSize = i === 1 ? "L" : "M";
-  const targetClass = i === 1 ? "l" : "m";
+  const targetSize = i === 1 ? "L" : "S";
+  const targetClass = i === 1 ? "l" : "s";
   $("stations").insertAdjacentHTML("beforeend", `
     <article class="station">
       <div class="station-head"><h3>Trạm ${i} · <span class="${targetClass}">Gạt ${targetSize}</span></h3><span class="badge neutral" id="home-${i}">HOME chưa rõ</span></div>
@@ -406,17 +409,15 @@ function updateConfigPreview() {
     write("cfg-preview", "Trạm 1 (L): nhập chiều cao hợp lệ 0 ≤ từ < đến ≤ 300 mm.");
     return;
   }
-  if (!Number.isFinite(mMin) || !Number.isFinite(mMax) || mMin < 0 || mMin >= mMax || mMax > 300) {
-    write("cfg-preview", "Trạm 2 (M): nhập chiều cao hợp lệ 0 ≤ từ < đến ≤ 300 mm.");
+  if (!Number.isFinite(mMin) || !Number.isFinite(mMax) || mMin <= 5 || mMin >= mMax || mMax > 300) {
+    write("cfg-preview", "Khoảng M: nhập chiều cao hợp lệ 5 < từ < đến ≤ 300 mm.");
     return;
   }
   const h01 = stationH0(1);
   const h02 = stationH0(2);
   const tofLMin = Math.max(0, Math.round((h01 - lMax) * 10) / 10);
   const tofLMax = Math.max(0, Math.round((h01 - lMin) * 10) / 10);
-  const tofMMin = Math.max(0, Math.round((h02 - mMax) * 10) / 10);
-  const tofMMax = Math.max(0, Math.round((h02 - mMin) * 10) / 10);
-  let bandNote = "· Ngoài hai khoảng (S) đi thẳng cuối băng.";
+  let bandNote = "· M đi thẳng cuối băng.";
   if (mMax < lMin) {
     bandNote = `· Khe đệm chống sai số ToF (${numbers.format(mMax)}–${numbers.format(lMin)} mm) đi thẳng không gạt.`;
   } else if (mMax > lMin) {
@@ -425,7 +426,7 @@ function updateConfigPreview() {
   write(
     "cfg-preview",
     `Trạm 1 gạt L: cao ${numbers.format(lMin)}–${numbers.format(lMax)} mm (ToF ~${numbers.format(tofLMin)}–${numbers.format(tofLMax)} mm theo H0₁=${numbers.format(h01)} mm) · ` +
-    `Trạm 2 gạt M: cao ${numbers.format(mMin)}–${numbers.format(mMax)} mm (ToF ~${numbers.format(tofMMin)}–${numbers.format(tofMMax)} mm theo H0₂=${numbers.format(h02)} mm) ${bandNote}`
+    `Trạm 2 gạt S: cao từ 5 mm đến dưới ${numbers.format(mMin)} mm theo H0₂=${numbers.format(h02)} mm ${bandNote}`
   );
 }
 
@@ -495,6 +496,17 @@ new ResizeObserver(() => {
 loadConfig();
 poll();
 refreshHistory();
+async function refreshConsole() {
+  try {
+    const lines = await api("/api/logs?limit=200");
+    const log = $("console-log");
+    const follow = log.scrollHeight - log.scrollTop - log.clientHeight < 30;
+    log.textContent = lines.length ? lines.map(line => `[${new Date(line.at * 1000).toLocaleString()}] ${line.message}`).join("\n") : "Chưa có log USB.";
+    if (follow) log.scrollTop = log.scrollHeight;
+  } catch { /* Existing contents remain available while the server reconnects. */ }
+}
+refreshConsole();
+setInterval(refreshConsole, 2000);
 setInterval(refreshHistory, 3000);
 setInterval(() => {
   if (Boolean(isLive()) !== renderedLive) connection();

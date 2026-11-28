@@ -575,6 +575,8 @@ def run_bridge(port: str, baud: int, device_id: str, broker_host: str,
 
             if line is not None:
                 print(f"[PICO] {line}", flush=True)
+                if line:
+                    publish("console", {"line": line[:4096]})
                 if state.parse_line(line):
                     publish("telemetry", state.build_telemetry())
                     last_publish = time.monotonic()
@@ -589,6 +591,33 @@ def run_bridge(port: str, baud: int, device_id: str, broker_host: str,
         client.disconnect()
 
 
+def run_logs_only(port: str, baud: int, device_id: str, broker_host: str, broker_port: int) -> None:
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"console-{device_id}")
+    client.connect_async(broker_host, broker_port, keepalive=15)
+    client.loop_start()
+    try:
+        while True:
+            try:
+                serial = WinSerialPort(port, baud=baud)
+                print(f"[CONSOLE] Connected {port}", flush=True)
+                try:
+                    while True:
+                        line = serial.readline()
+                        if line:
+                            print(f"[PICO] {line}", flush=True)
+                            client.publish(f"{topic_prefix(device_id)}/console", json.dumps({"line": line[:4096]}))
+                finally:
+                    serial.close()
+            except OSError as exc:
+                print(f"[CONSOLE] Waiting for {port}: {exc}", flush=True)
+                time.sleep(2)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        client.loop_stop()
+        client.disconnect()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="COM6")
@@ -597,5 +626,9 @@ if __name__ == "__main__":
     parser.add_argument("--broker", default="127.0.0.1")
     parser.add_argument("--port-mqtt", type=int, default=1883)
     parser.add_argument("--h0", type=float, default=82.0)
+    parser.add_argument("--logs-only", action="store_true", help="Forward USB logs without controlling the Pico")
     args = parser.parse_args()
-    run_bridge(args.port, args.baud, args.device, args.broker, args.port_mqtt, args.h0)
+    if args.logs_only:
+        run_logs_only(args.port, args.baud, args.device, args.broker, args.port_mqtt)
+    else:
+        run_bridge(args.port, args.baud, args.device, args.broker, args.port_mqtt, args.h0)

@@ -166,6 +166,17 @@ class Dashboard:
                 and time.monotonic() - self.fresh_at < FRESH_SECONDS)
 
     def handle_message(self, leaf, payload, retained=False):
+        if leaf == "console" and not retained and len(payload) <= 8192:
+            try:
+                data = json.loads(payload)
+                line = data.get("line") if isinstance(data, dict) else None
+            except (ValueError, UnicodeDecodeError):
+                return
+            if isinstance(line, str) and line and len(line) <= 4096:
+                with self.lock:
+                    if self.broker_connected:
+                        self.store.record_log(wall_time(), line)
+            return
         if leaf not in MESSAGES or len(payload) > 8192 or (retained and leaf != "availability"):
             return
         try:
@@ -334,7 +345,7 @@ class Bridge:
             client.disconnect()
             return
         client.subscribe([(f"{self.dashboard.prefix}/{leaf}", int(leaf != "telemetry")) for leaf in MESSAGES]
-                         + [(f"{self.dashboard.prefix}/wifi/result", 1)])
+                         + [(f"{self.dashboard.prefix}/wifi/result", 1), (f"{self.dashboard.prefix}/console", 0)])
         self.dashboard.broker_status(True)
         self.publish(json.dumps(self.dashboard.get_config()), "config/set", retain=True)
 
@@ -401,6 +412,13 @@ def index():
 @app.get("/api/status")
 def status(request: Request):
     return request.app.state.dashboard.status()
+
+
+@app.get("/api/logs")
+def logs(request: Request, limit: int = Query(default=200, ge=1, le=1000)):
+    dashboard = request.app.state.dashboard
+    with dashboard.lock:
+        return dashboard.store.recent_logs(limit)
 
 
 @app.get("/api/config")

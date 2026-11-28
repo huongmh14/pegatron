@@ -1,5 +1,9 @@
 # Dashboard IoT PEGATRON
 
+## Console USB và điều khiển máy thật
+
+Chạy `run-dashboard.bat` để mở dashboard máy thật, broker và chương trình thu log USB (mặc định COM6; sửa cổng trong file nếu khác). Console web hiển thị 200 dòng gần nhất; các dòng nhận khi dashboard và broker đang kết nối được lưu trong `dashboard/data/pico-01.sqlite3`. Không lưu được những dòng phát ra khi USB, broker hoặc dashboard ngắt kết nối. Đóng cửa sổ USB Console trước khi dùng Serial Monitor hoặc nạp firmware. Điều khiển web dùng Wi-Fi/MQTT của Pico, không dùng đường USB log; cấu hình Wi-Fi và broker theo `docs/dashboard.md`. Máy thật cần firmware mới và cấu hình `RELAY_ACTIVE_LEVEL` theo kiểm tra thực tế. Nút E-STOP vật lý vẫn phải cắt nguồn động lực độc lập.
+
 Dashboard tiếng Việt chạy trên laptop. Dùng MQTT để nhận dữ liệu hai trạm, FastAPI để phục vụ giao diện và SQLite để lưu lịch sử. Mặc định kết nối thiết bị giả lập. Mỗi ID thiết bị có một tệp dữ liệu riêng.
 
 ## Chạy thử trên Windows
@@ -12,7 +16,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-test.txt
 ```
 
-Sau đó, từ thư mục gốc dự án, chạy `run-dashboard.bat` để mở broker, dashboard và simulator trong ba cửa sổ riêng. Trình duyệt sẽ mở tại [dashboard localhost](http://127.0.0.1:8000). Giữ các cửa sổ này mở trong lúc sử dụng; nhấn Ctrl+C trong từng cửa sổ để dừng.
+Sau đó, nhấp đúp `run-dashboard.bat` ở thư mục gốc để mở dashboard máy thật trong trình duyệt tại [dashboard localhost](http://127.0.0.1:8000). Giữ các cửa sổ broker, dashboard và USB Console mở trong lúc sử dụng; nhấn Ctrl+C trong từng cửa sổ để dừng. Chạy `run-dashboard.bat --sim` từ terminal để dùng simulator. Nếu dashboard đã chạy, nhấp đúp sẽ mở lại phiên hiện tại, kể cả khi phiên đó là giả lập.
 
 Hoặc mở ba cửa sổ PowerShell trong thư mục `dashboard` và chạy mỗi lệnh ở một cửa sổ:
 
